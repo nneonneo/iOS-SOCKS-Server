@@ -28,4 +28,8 @@ While it's easiest to use this with websites, it's actually possible to tunnel a
 
 `ssh -o ProxyCommand='nc -X 5 -x <IP>:9876 %h %p' user@host`
 
+# Troubleshooting
 
+## Doesn't work with an ad-hoc network on macOS
+
+macOS appears to incorrectly assess the Internet as unreachable with an ad-hoc network, even if a proxy is configured. A workaround for this, tested on macOS 10.14, is described under [issue #1](https://github.com/nneonneo/SOCKS-iOS/issues/1#issuecomment-583989079).
