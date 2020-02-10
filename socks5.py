@@ -28,32 +28,43 @@ try:
     #  internet-enabled but limited (e.g. firewalled)
 
     import ifaddrs
+    from collections import defaultdict
     interfaces = ifaddrs.get_interfaces()
-    wifi = []
-    notwifi = []
+    iftypes = defaultdict(list)
     for iface in interfaces:
         if not iface.addr:
             continue
         if iface.name.startswith('lo'):
             continue
+        # TODO IPv6 support someday
         if iface.addr.family != socket.AF_INET:
             continue
         # XXX implement better classification of interfaces
         if iface.name.startswith('en'):
-            wifi.append(iface)
+            iftypes['en'].append(iface)
+        elif iface.name.startswith('bridge'):
+            iftypes['bridge'].append(iface)
         else:
-            notwifi.append(iface)
-    if wifi:
+            iftypes['cell'].append(iface)
+
+    if iftypes['bridge']:
+        iface = iftypes['bridge'][0]
+        print("Assuming proxy will be accessed over hotspot bridge interface %s at %s" %
+              (iface.name, iface.addr.address))
+        PROXY_HOST = iface.addr.address
+    elif iftypes['en']:
+        iface = iftypes['en'][0]
         print("Assuming proxy will be accessed over WiFi interface %s at %s" %
-              (wifi[0].name, wifi[0].addr.address))
-        PROXY_HOST = wifi[0].addr.address
+              (iface.name, iface.addr.address))
+        PROXY_HOST = iface.addr.address
     else:
         print('Warning: could not get WiFi address; assuming %s' % PROXY_HOST)
 
-    if notwifi:
+    if iftypes['cell']:
+        iface = iftypes['cell'][0]
         print("Will connect to servers over interface %s at %s" %
-              (notwifi[0].name, notwifi[0].addr.address))
-        CONNECT_HOST = notwifi[0].addr.address
+              (iface.name, iface.addr.address))
+        CONNECT_HOST = iface.addr.address
 except Exception as e:
     print(e)
     interfaces = None
@@ -75,7 +86,7 @@ logging.basicConfig(level=logging.DEBUG)
 SOCKS_VERSION = 5
 SOCKS_HOST = '0.0.0.0'
 SOCKS_PORT = 9876
-WPAD_PORT = 8080
+WPAD_PORT = 80
 
 
 class ThreadingTCPServer(ThreadingMixIn, TCPServer):
@@ -221,10 +232,10 @@ function FindProxyForURL(url, host)
    } else if (isInNet(host, "10.0.0.0", "255.0.0.0")) {
       return "DIRECT";
    } else {
-      return "SOCKS %s:%d";
+      return "SOCKS5 %s:%d; SOCKS %s:%d";
    }
 }
-""" % (phost, pport)).strip().encode())
+""" % (phost, pport, phost, pport)).strip().encode())
 
     HTTPServer.allow_reuse_address = True
     server = HTTPServer((hhost, hport), HTTPHandler)
