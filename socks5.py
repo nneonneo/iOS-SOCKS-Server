@@ -16,7 +16,8 @@ CONNECT_HOST = None
 # Try to keep the screen from turning off (iOS)
 try:
     import console
-    console.set_idle_timer_disabled(True)
+    from objc_util import on_main_thread
+    on_main_thread(console.set_idle_timer_disabled)(True)
 except ImportError:
     pass
 
