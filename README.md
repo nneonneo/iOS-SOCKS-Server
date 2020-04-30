@@ -6,9 +6,10 @@ A simple SOCKS proxy designed to run on Pythonista on iOS, letting you fake-teth
 
 - Install Pythonista from the [App Store](https://apps.apple.com/us/app/pythonista-3/id1085978097). It's a paid app, but it's worth every penny if you are a power user.
 - Download the code from [GitHub](https://github.com/nneonneo/iOS-SOCKS-Server/archive/master.zip).
-- Unpack the code in the Files app, then move the package to the Pythonista iCloud directory
-- Navigate to the `socks5.py` script in Pythonista and open it. 
-- Optionally, you can tap on the wrench to add the script to your home screen. 
+- Open the Files app, navigate to Downloads, and tap on the zip file to uncompress it.
+- Move the resulting `iOS-SOCKS-Server` folder to the Pythonista iCloud directory
+- Open Pythonista, navigate to iCloud, `iOS-SOCKS-Server` and open the `socks5.py` script.
+- Optionally, you can tap on the wrench and select `Shortcuts...` to add the script to your home screen. 
 
 # Running
 
