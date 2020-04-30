@@ -5,7 +5,7 @@ A simple SOCKS proxy designed to run on Pythonista on iOS, letting you fake-teth
 # Installation
 
 - Install Pythonista from the [App Store](https://apps.apple.com/us/app/pythonista-3/id1085978097). It's a paid app, but it's worth every penny if you are a power user.
-- Download the code from [GitHub](https://github.com/nneonneo/socks5-ios/archive/master.zip).
+- Download the code from [GitHub](https://github.com/nneonneo/iOS-SOCKS-Server/archive/master.zip).
 - Unpack the code in the Files app, then move the package to the Pythonista iCloud directory
 - Navigate to the `socks5.py` script in Pythonista and open it. 
 - Optionally, you can tap on the wrench to add the script to your home screen. 
@@ -32,4 +32,4 @@ While it's easiest to use this with websites, it's actually possible to tunnel a
 
 ## Doesn't work with an ad-hoc network on macOS
 
-macOS appears to incorrectly assess the Internet as unreachable with an ad-hoc network, even if a proxy is configured. A workaround for this, tested on macOS 10.14, is described under [issue #1](https://github.com/nneonneo/SOCKS-iOS/issues/1#issuecomment-583989079).
+macOS appears to incorrectly assess the Internet as unreachable with an ad-hoc network, even if a proxy is configured. A workaround for this, tested on macOS 10.14, is described under [issue #1](https://github.com/nneonneo/iOS-SOCKS-Server/issues/1#issuecomment-583989079).
