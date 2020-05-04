@@ -47,7 +47,11 @@ Ifaddrs._fields_ = [('ifa_next', POINTER(Ifaddrs)), ('ifa_name', c_char_p),
                     ('ifa_netmask', POINTER(Sockaddr)), ('ifa_dstaddr', POINTER(Sockaddr)),
                     ('ifa_data', c_void_p)]
 
-libc = CDLL('libSystem.dylib')
+try:
+    libc = CDLL('libSystem.dylib')
+except OSError:
+    from ctypes.util import find_library
+    libc = CDLL(find_library('libSystem.dylib'))
 libc.getifaddrs.restype = c_int
 libc.getifaddrs.argtypes = [POINTER(POINTER(Ifaddrs))]
 
