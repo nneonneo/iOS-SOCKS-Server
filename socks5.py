@@ -2,16 +2,20 @@
 # Original from https://github.com/rushter/socks5/blob/master/server.py
 # Modified for Pythonista by @nneonneo
 
+from io import BytesIO
 import logging
-import select
+from select import select
 import socket
 import struct
 import threading
 from socketserver import ThreadingMixIn, TCPServer, StreamRequestHandler
 
-# IP over which the proxy will be available
+# IP over which the proxy will be available (probably WiFi IP)
 PROXY_HOST = "172.20.10.1"
+# IP over which the proxy will attempt to connect to the Internet
 CONNECT_HOST = None
+# Time out connections after being idle for this long (in seconds)
+IDLE_TIMEOUT = 1800
 
 # Try to keep the screen from turning off (iOS)
 try:
@@ -50,12 +54,12 @@ try:
 
     if iftypes['bridge']:
         iface = iftypes['bridge'][0]
-        print("Assuming proxy will be accessed over hotspot bridge interface %s at %s" %
+        print("Assuming proxy will be accessed over hotspot (%s) at %s" %
               (iface.name, iface.addr.address))
         PROXY_HOST = iface.addr.address
     elif iftypes['en']:
         iface = iftypes['en'][0]
-        print("Assuming proxy will be accessed over WiFi interface %s at %s" %
+        print("Assuming proxy will be accessed over WiFi (%s) at %s" %
               (iface.name, iface.addr.address))
         PROXY_HOST = iface.addr.address
     else:
@@ -83,6 +87,7 @@ except ImportError:
     print("Warning: dnspython not available; falling back to system DNS")
     resolver = None
 
+
 logging.basicConfig(level=logging.DEBUG)
 SOCKS_VERSION = 5
 SOCKS_HOST = '0.0.0.0'
@@ -91,123 +96,257 @@ WPAD_PORT = 80
 
 
 class ThreadingTCPServer(ThreadingMixIn, TCPServer):
+    daemon_threads = True
     allow_reuse_address = True
 
 
-def recvall(sock, n):
+def readall(f, n):
     res = bytearray()
     while len(res) < n:
-        chunk = sock.recv(n - len(res))
+        chunk = f.read(n - len(res))
         if not chunk:
             raise EOFError()
         res += chunk
-    return res
+    return bytes(res)
 
 
-def sendall(sock, data):
-    b = memoryview(data)
-    n = 0
-    while n < len(b):
-        res = sock.send(b[n:])
-        if res <= 0:
-            raise EOFError()
-        n += res
+def readstruct(f, fmt):
+    return struct.unpack(fmt, readall(f, struct.calcsize(fmt)))
 
 
 class SocksProxy(StreamRequestHandler):
+    STATUS_SUCCEEDED = 0     # succeeded
+    STATUS_ERROR = 1         # general SOCKS server failure
+    STATUS_EPERM = 2         # connection not allowed by ruleset
+    STATUS_ENETDOWN = 3      # Network unreachable
+    STATUS_EHOSTUNREACH = 4  # Host unreachable
+    STATUS_ECONNREFUSED = 5  # Connection refused
+    STATUS_ETIMEDOUT = 6     # TTL expired
+    STATUS_ENOTSUP = 7       # Command not supported
+    STATUS_EAFNOSUPPORT = 8  # Address type not supported
+
+    ATYP_IPV4 = 1
+    ATYP_DOMAIN = 3
+    ATYP_IPV6 = 4
+
+    def encode_address(self, sockaddr=None):
+        if sockaddr is None:
+            return struct.pack("!BIH", self.ATYP_IPV4, 0, 0)
+
+        address, port = sockaddr
+        try:
+            addrbytes = socket.inet_pton(socket.AF_INET, address)
+            return struct.pack("!B4sH", self.ATYP_IPV4, addrbytes, port)
+        except Exception:
+            addrbytes = socket.inet_pton(socket.AF_INET6, address)
+            return struct.pack("!B16sH", self.ATYP_IPV6, addrbytes, port)
+
+    def send_reply(self, status, bindaddr=None):
+        reply = struct.pack("!BBB", SOCKS_VERSION, status, 0)
+        reply += self.encode_address(bindaddr)
+        self.connection.sendall(reply)
+
     def handle(self):
         log_tag = '%s:%s' % self.client_address
 
         logging.info('%s: new connection', log_tag)
 
+        sockfile = self.connection.makefile('rb')
+
         # receive client's auth methods
-        version, nmethods = struct.unpack("!BB", recvall(self.connection, 2))
+        version, nmethods = readstruct(sockfile, "!BB")
         assert version == SOCKS_VERSION
 
         # get available methods
-        methods = recvall(self.connection, nmethods)
+        methods = readstruct(sockfile, "!%dB" % nmethods)
 
         # accept only NONE auth
         if 0 not in methods:
             # no acceptable methods - fail with method 255
-            sendall(self.connection, struct.pack("!BB", SOCKS_VERSION, 0xff))
+            self.connection.sendall(struct.pack("!BB", SOCKS_VERSION, 0xff))
+            logging.error('%s: unsupported auth methods %s', log_tag, methods)
             self.server.close_request(self.request)
             return
 
         # send welcome with auth method 0=NONE
-        sendall(self.connection, struct.pack("!BB", SOCKS_VERSION, 0))
+        self.connection.sendall(struct.pack("!BB", SOCKS_VERSION, 0))
 
         # request
-        req = recvall(self.connection, 4)
-        version, cmd, _, address_type = req
+        version, cmd, _, address_type = readstruct(sockfile, "!BBBB")
         assert version == SOCKS_VERSION
 
-        if address_type == 1:  # IPv4
-            address = socket.inet_ntoa(recvall(self.connection, 4))
-            status = 0
-        elif address_type == 3:  # Domain name
-            domain_length = ord(recvall(self.connection, 1))
-            address = recvall(self.connection, domain_length).decode()
-            status = 0
-            if resolver:
-                logging.debug('%s: resolving address %s', log_tag, address)
-                addrs = resolver.query(address, 'A', source=CONNECT_HOST)
-                if addrs:
-                    address = random.choice(addrs).address
-        else:
-            status = 8  # Address type not supported
-
-        port, = struct.unpack('!H', recvall(self.connection, 2))
+        address, port = self.read_addrport(address_type, sockfile)
+        if address is None:
+            logging.error('%s: bad address type %d', log_tag, address_type)
+            self.send_reply(self.STATUS_EAFNOSUPPORT)
+            self.server.close_request(self.request)
+            return
 
         # reply
-        if status == 0:
-            try:
-                if cmd == 1:  # CONNECT
-                    remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    if CONNECT_HOST:
-                        remote.bind((CONNECT_HOST, 0))
-                    remote.connect((address, port))
-                    logging.info('%s: connected to %s:%s', log_tag, address, port)
-                    status = 0  # Succeeded
-                else:
-                    logging.info('%s: command %d unsupported', log_tag, cmd)
-                    status = 7  # Command not supported
+        if cmd == 1:  # CONNECT
+            if address_type == self.ATYP_DOMAIN:
+                address = self.resolve_address(address)
+            self.handle_connect(address, port)
+        elif cmd == 3:  # UDP ASSOCIATE
+            # ignore the request host: the client might not actually know
+            # its own address
+            self.handle_udp(self.client_address[0], port)
+        else:
+            logging.info('%s: command %d unsupported', log_tag, cmd)
+            self.send_reply(self.STATUS_ENOTSUP)
+            self.server.close_request(self.request)
 
-            except Exception as err:
-                logging.error('%s: connect error %s', log_tag, err)
-                # return connection refused error
-                status = 5
+    def resolve_address(self, address):
+        log_tag = '%s:%s' % self.client_address
+        if resolver:
+            logging.debug('%s: resolving address %s', log_tag, address)
+            addrs = resolver.query(address, 'A', source=CONNECT_HOST)
+            if addrs:
+                address = random.choice(addrs).address
+        return address
 
-        reply = struct.pack("!BBBBIH", SOCKS_VERSION, status, 0, 1, 0, 0)  # ATYP=IPV4
+    def read_addrport(self, address_type, sockfile):
+        if address_type == self.ATYP_IPV4:
+            address = socket.inet_ntop(socket.AF_INET, readall(sockfile, 4))
+        elif address_type == self.ATYP_DOMAIN:
+            domain_length = ord(readall(sockfile, 1))
+            address = readall(sockfile, domain_length).decode()
+        elif address_type == self.ATYP_IPV6:
+            address = socket.inet_ntop(socket.AF_INET6, readall(sockfile, 16))
+        else:
+            return None, None
+        port, = readstruct(sockfile, "!H")
+        return address, port
 
-        sendall(self.connection, reply)
+    def handle_connect(self, address, port):
+        log_tag = '%s:%s -> %s:%s' % (self.client_address + (address, port))
+        try:
+            remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            if CONNECT_HOST:
+                remote.bind((CONNECT_HOST, 0))
+            remote.connect((address, port))
+            logging.info('%s: connected', log_tag)
+        except Exception as err:
+            logging.error('%s: connect error %s', log_tag, err)
+            self.send_reply(self.STATUS_ECONNREFUSED)
+            self.server.close_request(self.request)
+            return
 
-        # establish data exchange
-        if status == 0:
-            try:
-                self.exchange_loop(self.connection, remote)
-            except Exception as e:
-                logging.error('%s: forwarding error: %s', log_tag, e)
+        self.send_reply(self.STATUS_SUCCEEDED)
+
+        try:
+            self.tcp_loop(self.connection, remote)
+        except socket.timeout:
+            logging.error('%s: connection timed out', log_tag)
+        except Exception as e:
+            logging.error('%s: forwarding error: %s', log_tag, e)
+
+        try:
+            remote.close()
+        except Exception:
+            pass
 
         logging.info('%s: shutting down', log_tag)
         self.server.close_request(self.request)
 
-    def exchange_loop(self, client, remote):
+    def tcp_loop(self, sock1, sock2):
         while True:
             # wait until client or remote is available for read
-            r, w, e = select.select([client, remote], [], [])
+            r, _, _ = select([sock1, sock2], [], [], IDLE_TIMEOUT)
+            if not r:
+                raise socket.timeout()
 
-            if client in r:
-                data = client.recv(4096)
+            if sock1 in r:
+                data = sock1.recv(4096)
                 if not data:
                     break
-                sendall(remote, data)
+                sock2.sendall(data)
 
-            if remote in r:
-                data = remote.recv(4096)
+            if sock2 in r:
+                data = sock2.recv(4096)
                 if not data:
                     break
-                sendall(client, data)
+                sock1.sendall(data)
+
+    def udp_loop(self, controlsock, csock, ssock):
+        log_tag = '%s:%s' % self.client_address
+
+        while True:
+            r, _, _ = select([controlsock, csock, ssock], [], [], IDLE_TIMEOUT)
+            if not r:
+                raise socket.timeout()
+
+            # Shut down the UDP association when the TCP connection breaks
+            if controlsock in r:
+                data = controlsock.recv(4096)
+                if not data:
+                    break
+
+            if csock in r:
+                data, addr = csock.recvfrom(4096)
+                sockfile = BytesIO(data)
+                try:
+                    # decode header
+                    _, frag, address_type = readstruct(sockfile, "!HBB")
+                    assert frag == 0, "UDP fragmentation is not supported"
+                    address, port = self.read_addrport(address_type, sockfile)
+                    assert address is not None, "Address type is not supported"
+                    if address_type == self.ATYP_DOMAIN:
+                        address = self.resolve_address(address)
+                    # strip header and send to target host
+                    ssock.sendto(sockfile.read(), (address, port))
+                except Exception as e:
+                    logging.info('%s: malformed udp packet: %s', log_tag, e)
+                    pass
+
+            if ssock in r:
+                data, addr = ssock.recvfrom(4096)
+                if not data:
+                    break
+                header = struct.pack("!HB", 0, 0) + self.encode_address(addr)
+                csock.send(header + data)
+
+    def handle_udp(self, address, port):
+        log_tag = '%s:%s -> %s:%s' % (self.client_address + (address, port))
+
+        try:
+            # client-side socket
+            csock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            csock.bind((SOCKS_HOST, 0))
+            csock.connect((address, port))
+            # remote-side socket
+            ssock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            if CONNECT_HOST:
+                ssock.bind((CONNECT_HOST, 0))
+            logging.info('%s: udp association established', log_tag)
+        except Exception as err:
+            logging.error('%s: udp association error %s', log_tag, err)
+            self.send_reply(self.STATUS_ERROR)
+            self.server.close_request(self.request)
+            return
+
+        _, cport = csock.getsockname()
+        self.send_reply(self.STATUS_SUCCEEDED, (PROXY_HOST, cport))
+
+        try:
+            self.udp_loop(self.connection, csock, ssock)
+        except socket.timeout:
+            logging.error('%s: connection timed out', log_tag)
+        except Exception as e:
+            logging.error('%s: forwarding error: %s', log_tag, e)
+
+        try:
+            csock.close()
+        except Exception:
+            pass
+
+        try:
+            ssock.close()
+        except Exception:
+            pass
+
+        logging.info('%s: shutting down', log_tag)
+        self.server.close_request(self.request)
 
 
 def start_wpad_server(hhost, hport, phost, pport):
@@ -240,12 +379,22 @@ function FindProxyForURL(url, host)
 
     HTTPServer.allow_reuse_address = True
     server = HTTPServer((hhost, hport), HTTPHandler)
-    threading.Thread(target=server.serve_forever).start()
+    thread = threading.Thread(target=server.serve_forever)
+    thread.daemon = True
+    thread.start()
+    return server
+
 
 if __name__ == '__main__':
-    start_wpad_server(SOCKS_HOST, WPAD_PORT, PROXY_HOST, SOCKS_PORT)
+    wpad_server = start_wpad_server(
+        SOCKS_HOST, WPAD_PORT, PROXY_HOST, SOCKS_PORT
+    )
     print("PAC URL: http://{}:{}/wpad.dat".format(PROXY_HOST, WPAD_PORT))
     print("SOCKS Address: {}:{}".format(PROXY_HOST or SOCKS_HOST, SOCKS_PORT))
 
-    with ThreadingTCPServer((SOCKS_HOST, SOCKS_PORT), SocksProxy) as server:
+    server = ThreadingTCPServer((SOCKS_HOST, SOCKS_PORT), SocksProxy)
+    try:
         server.serve_forever()
+    except KeyboardInterrupt:
+        server.shutdown()
+        wpad_server.shutdown()
