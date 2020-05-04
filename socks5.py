@@ -349,7 +349,7 @@ class SocksProxy(StreamRequestHandler):
         self.server.close_request(self.request)
 
 
-def start_wpad_server(hhost, hport, phost, pport):
+def create_wpad_server(hhost, hport, phost, pport):
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
     class HTTPHandler(BaseHTTPRequestHandler):
@@ -375,26 +375,36 @@ function FindProxyForURL(url, host)
       return "SOCKS5 %s:%d; SOCKS %s:%d";
    }
 }
-""" % (phost, pport, phost, pport)).strip().encode())
+""" % (phost, pport, phost, pport)).lstrip().encode())
 
     HTTPServer.allow_reuse_address = True
     server = HTTPServer((hhost, hport), HTTPHandler)
-    thread = threading.Thread(target=server.serve_forever)
-    thread.daemon = True
-    thread.start()
     return server
 
 
+def run_wpad_server(server):
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
 if __name__ == '__main__':
-    wpad_server = start_wpad_server(
+    wpad_server = create_wpad_server(
         SOCKS_HOST, WPAD_PORT, PROXY_HOST, SOCKS_PORT
     )
+
     print("PAC URL: http://{}:{}/wpad.dat".format(PROXY_HOST, WPAD_PORT))
     print("SOCKS Address: {}:{}".format(PROXY_HOST or SOCKS_HOST, SOCKS_PORT))
+
+    thread = threading.Thread(target=run_wpad_server, args=(wpad_server,))
+    thread.daemon = True
+    thread.start()
 
     server = ThreadingTCPServer((SOCKS_HOST, SOCKS_PORT), SocksProxy)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
+        print("Shutting down.")
         server.shutdown()
         wpad_server.shutdown()
