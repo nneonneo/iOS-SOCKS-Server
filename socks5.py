@@ -196,13 +196,15 @@ class SocksProxy(StreamRequestHandler):
             self.send_reply(self.STATUS_ENOTSUP)
             self.server.close_request(self.request)
 
-    def resolve_address(self, address):
+    def resolve_address(self, address, force=False):
         log_tag = '%s:%s' % self.client_address
         if resolver:
             logging.debug('%s: resolving address %s', log_tag, address)
             addrs = resolver.query(address, 'A', source=CONNECT_HOST)
             if addrs:
-                address = random.choice(addrs).address
+                return random.choice(addrs).address
+        if force:
+            return socket.gethostbyname(address)
         return address
 
     def read_addrport(self, address_type, sockfile):
@@ -270,6 +272,7 @@ class SocksProxy(StreamRequestHandler):
 
     def udp_loop(self, controlsock, csock, ssock):
         log_tag = '%s:%s' % self.client_address
+        connections = {}
 
         while True:
             r, _, _ = select([controlsock, csock, ssock], [], [], IDLE_TIMEOUT)
@@ -292,7 +295,8 @@ class SocksProxy(StreamRequestHandler):
                     address, port = self.read_addrport(address_type, sockfile)
                     assert address is not None, "Address type is not supported"
                     if address_type == self.ATYP_DOMAIN:
-                        address = self.resolve_address(address)
+                        address = self.resolve_address(address, force=True)
+                    connections[address, port] = addr
                     # strip header and send to target host
                     ssock.sendto(sockfile.read(), (address, port))
                 except Exception as e:
@@ -303,8 +307,11 @@ class SocksProxy(StreamRequestHandler):
                 data, addr = ssock.recvfrom(4096)
                 if not data:
                     break
+                if addr not in connections:
+                    logging.warning('%s: packet received from unknown sender %s:%s', log_tag, *addr)
+                    continue
                 header = struct.pack("!HB", 0, 0) + self.encode_address(addr)
-                csock.send(header + data)
+                csock.sendto(header + data, connections[addr])
 
     def handle_udp(self, address, port):
         log_tag = '%s:%s -> %s:%s' % (self.client_address + (address, port))
@@ -313,7 +320,6 @@ class SocksProxy(StreamRequestHandler):
             # client-side socket
             csock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             csock.bind((SOCKS_HOST, 0))
-            csock.connect((address, port))
             # remote-side socket
             ssock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             if CONNECT_HOST:
