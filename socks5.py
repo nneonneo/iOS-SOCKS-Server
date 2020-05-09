@@ -218,6 +218,25 @@ class SocksProxy(StreamRequestHandler):
         port, = readstruct(sockfile, "!H")
         return address, port
 
+    def tcp_loop(self, sock1, sock2):
+        while True:
+            # wait until client or remote is available for read
+            r, _, _ = select([sock1, sock2], [], [], IDLE_TIMEOUT)
+            if not r:
+                raise socket.timeout()
+
+            if sock1 in r:
+                data = sock1.recv(4096)
+                if not data:
+                    break
+                sock2.sendall(data)
+
+            if sock2 in r:
+                data = sock2.recv(4096)
+                if not data:
+                    break
+                sock1.sendall(data)
+
     def handle_connect(self, address, port):
         log_tag = '%s:%s -> %s:%s' % (self.client_address + (address, port))
         try:
@@ -248,25 +267,6 @@ class SocksProxy(StreamRequestHandler):
 
         logging.info('%s: shutting down', log_tag)
         self.server.close_request(self.request)
-
-    def tcp_loop(self, sock1, sock2):
-        while True:
-            # wait until client or remote is available for read
-            r, _, _ = select([sock1, sock2], [], [], IDLE_TIMEOUT)
-            if not r:
-                raise socket.timeout()
-
-            if sock1 in r:
-                data = sock1.recv(4096)
-                if not data:
-                    break
-                sock2.sendall(data)
-
-            if sock2 in r:
-                data = sock2.recv(4096)
-                if not data:
-                    break
-                sock1.sendall(data)
 
     def udp_loop(self, controlsock, csock, ssock):
         log_tag = '%s:%s' % self.client_address
