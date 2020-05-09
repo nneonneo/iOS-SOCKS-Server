@@ -271,7 +271,7 @@ class SocksProxy(StreamRequestHandler):
         self.server.close_request(self.request)
 
     def udp_loop(self, controlsock, csock, ssock):
-        log_tag = '%s:%s' % self.client_address
+        log_tag = '%s:%s [udp]' % self.client_address
         connections = {}
 
         while True:
@@ -296,11 +296,16 @@ class SocksProxy(StreamRequestHandler):
                     assert address is not None, "Address type is not supported"
                     if address_type == self.ATYP_DOMAIN:
                         address = self.resolve_address(address, force=True)
+                    if (address, port) not in connections:
+                        logging.info(
+                            '%s: new connection to %s:%s',
+                            log_tag, address, port
+                        )
                     connections[address, port] = addr
                     # strip header and send to target host
                     ssock.sendto(sockfile.read(), (address, port))
                 except Exception as e:
-                    logging.info('%s: malformed udp packet: %s', log_tag, e)
+                    logging.info('%s: malformed packet: %s', log_tag, e)
                     pass
 
             if ssock in r:
@@ -308,13 +313,16 @@ class SocksProxy(StreamRequestHandler):
                 if not data:
                     break
                 if addr not in connections:
-                    logging.warning('%s: packet received from unknown sender %s:%s', log_tag, *addr)
+                    logging.warning(
+                        '%s: got packet from unknown sender %s:%s',
+                        log_tag, *addr
+                    )
                     continue
                 header = struct.pack("!HB", 0, 0) + self.encode_address(addr)
                 csock.sendto(header + data, connections[addr])
 
     def handle_udp(self, address, port):
-        log_tag = '%s:%s -> %s:%s' % (self.client_address + (address, port))
+        log_tag = '%s:%s [udp]' % (self.client_address)
 
         try:
             # client-side socket
