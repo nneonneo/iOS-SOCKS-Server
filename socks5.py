@@ -6,6 +6,7 @@ from io import BytesIO
 import logging
 from select import select
 import socket
+import ui
 import struct
 import threading
 from socketserver import ThreadingMixIn, TCPServer, StreamRequestHandler
@@ -396,6 +397,14 @@ function FindProxyForURL(url, host)
     return server
 
 
+# Handler for full screen button to render a full screen window.
+# Use a two-finger "slide down" gesture to close.
+def full_screen_handler(sender):
+    fs_view = ui.View()
+    fs_view.name = "Full screen"
+    fs_view.background_color = 'black'
+    fs_view.present(style='popover', hide_title_bar=True)
+
 def run_wpad_server(server):
     try:
         server.serve_forever()
@@ -416,6 +425,19 @@ if __name__ == '__main__':
     thread.start()
 
     server = ThreadingTCPServer((SOCKS_HOST, SOCKS_PORT), SocksProxy)
+
+    # Create side panel UI component to enter full screen
+    view = ui.View()
+    view.name = "SOCKS"
+    view.background_color = 'black'
+    view.flex = 'WH'
+    # Add simple button to show full screen popover
+    fs_button = ui.Button(title="Enter full screen")
+    fs_button.action = full_screen_handler
+
+    # Render main UI and full screen button
+    view.add_subview(fs_button)
+    view.present(style='panel', hide_title_bar=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
