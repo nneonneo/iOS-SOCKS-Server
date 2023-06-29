@@ -60,6 +60,46 @@ def is_globally_routable(ipv6_address):
     return True
 
 try:
+    # TODO: configurable DNS (or find a way to use the cell network's own DNS)
+    # TODO support IPv6 which is increasingly common on cell networks
+    import dns.resolver
+    resolver = dns.resolver.Resolver(configure=False)
+    resolver.nameservers += ['1.0.0.1', '1.1.1.1', '8.8.8.8']
+    # random is used to load-balance among multiple A records
+    import random
+except ImportError:
+    # pip install dnspython
+    print("Warning: dnspython not available; falling back to system DNS")
+    resolver = None
+
+def resolve_address_global(address, force=False):
+    log_tag = 'global'
+    result = {'ipv4': None, 'ipv6': None}
+
+    if resolver:
+        logging.debug('%s: resolving address %s', log_tag, address)
+
+        def resolve_query(query_type):
+            try:
+                addrs = resolver.query(address, query_type, source=CONNECT_HOST['ipv4'])
+                if addrs:
+                    return random.choice(addrs).address
+            except Exception:
+                return None
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            future_ipv4 = executor.submit(resolve_query, 'A')
+            future_ipv6 = executor.submit(resolve_query, 'AAAA')
+
+            result['ipv4'] = future_ipv4.result()
+            result['ipv6'] = future_ipv6.result()
+
+    if force and not result['ipv4']:
+        result['ipv4'] = socket.gethostbyname(address)
+
+    return result
+
+try:
     # We want the WiFi address so that clients know what IP to use.
     # We want the non-WiFi (cellular?) address so that we can force network
     #  traffic to go over that network. This allows the proxy to correctly
@@ -105,7 +145,17 @@ try:
             CONNECT_HOST["ipv4"] = iface_ipv4.addr.address
         if iface_ipv6:
             initial_output += "Will connect to IPv6 servers over interface %s at %s\n" % (iface_ipv6.name, iface_ipv6.addr.address)
-            CONNECT_HOST["ipv6"] = iface_ipv6.addr.address
+            # Test IPv6 connectivity
+            try:
+                test_socket = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+                test_socket.settimeout(5)
+                test_socket.bind((iface_ipv6.addr.address, 0))
+                test_socket.connect((resolve_address_global("www.google.com")["ipv6"], 80))
+                test_socket.close()
+                CONNECT_HOST["ipv6"] = iface_ipv6.addr.address
+            except Exception as e:
+                initial_output += "Failed to connect to www.google.com over IPv6 due to: %s\n" % str(e)
+                CONNECT_HOST["ipv6"] = None
     print(initial_output)
 except Exception as e:
     print("Address detection failed: %s: %s" % (type(e).__name__, e))
@@ -115,18 +165,6 @@ except Exception as e:
 
     interfaces = None
 
-try:
-    # TODO: configurable DNS (or find a way to use the cell network's own DNS)
-    # TODO support IPv6 which is increasingly common on cell networks
-    import dns.resolver
-    resolver = dns.resolver.Resolver(configure=False)
-    resolver.nameservers += ['1.0.0.1', '1.1.1.1', '8.8.8.8']
-    # random is used to load-balance among multiple A records
-    import random
-except ImportError:
-    # pip install dnspython
-    print("Warning: dnspython not available; falling back to system DNS")
-    resolver = None
 
 
 SOCKS_VERSION = 5
@@ -240,31 +278,7 @@ class SocksProxy(StreamRequestHandler):
             self.server.close_request(self.request)
 
     def resolve_address(self, address, force=False):
-        log_tag = '%s:%s' % self.client_address
-        result = {'ipv4': None, 'ipv6': None}
-
-        if resolver:
-            logging.debug('%s: resolving address %s', log_tag, address)
-
-            def resolve_query(query_type):
-                try:
-                    addrs = resolver.query(address, query_type, source=CONNECT_HOST['ipv4'])
-                    if addrs:
-                        return random.choice(addrs).address
-                except Exception:
-                    return None
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                future_ipv4 = executor.submit(resolve_query, 'A')
-                future_ipv6 = executor.submit(resolve_query, 'AAAA')
-
-                result['ipv4'] = future_ipv4.result()
-                result['ipv6'] = future_ipv6.result()
-
-        if force and not result['ipv4']:
-            result['ipv4'] = socket.gethostbyname(address)
-
-        return result
+        return resolve_address_global(address, force)
 
     def read_addrport(self, address_type, sockfile):
         if address_type == self.ATYP_IPV4:
@@ -553,7 +567,6 @@ def print_traffic_info():
             console.clear()
         else:
             print('\033c', end='')
-# print initial_output
         print(initial_output)
         print("PAC URL: http://{}:{}/wpad.dat".format(PROXY_HOST, WPAD_PORT))
         print("SOCKS Address: {}:{}".format(PROXY_HOST or SOCKS_HOST, SOCKS_PORT))
