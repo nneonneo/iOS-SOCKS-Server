@@ -10,7 +10,6 @@ import socket
 import struct
 import threading
 from socketserver import ThreadingMixIn, TCPServer, StreamRequestHandler
-from concurrent.futures import ThreadPoolExecutor
 import concurrent.futures
 import time
 
@@ -227,7 +226,7 @@ class SocksProxy(StreamRequestHandler):
                 except Exception:
                     return None
 
-            with ThreadPoolExecutor(max_workers=2) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                 future_ipv4 = executor.submit(resolve_query, 'A')
                 future_ipv6 = executor.submit(resolve_query, 'AAAA')
 
