@@ -17,9 +17,6 @@ import sys
 if 'Pythonista' in sys.executable:
     import console
 
-
-
-
 shutdown_event = threading.Event()
 inbound_traffic = 0
 outbound_traffic = 0
@@ -60,9 +57,6 @@ try:
         if not iface.addr:
             continue
         if iface.name.startswith('lo'):
-            continue
-        # TODO IPv6 support someday
-        if iface.addr.family != socket.AF_INET:
             continue
         # XXX implement better classification of interfaces
         if iface.name.startswith('en'):
