@@ -99,17 +99,20 @@ try:
 
     if iftypes['cell']:
         iface_ipv4 = next((iface for iface in iftypes['cell'] if iface.addr.family == socket.AF_INET), None)
-        iface_ipv6 = next((iface for iface in iftypes['cell'] if iface.addr.family == socket.AF_INET6 and is_globally_routable(iface.addr.address)), None)
+        iface_ipv6 = next((iface for iface in iftypes['cell'] if iface.addr.family == socket.AF_INET6 and iface.addr.address and is_globally_routable(iface.addr.address)), None)
         if iface_ipv4:
             initial_output += "Will connect to IPv4 servers over interface %s at %s\n" % (iface_ipv4.name, iface_ipv4.addr.address)
             CONNECT_HOST["ipv4"] = iface_ipv4.addr.address
         if iface_ipv6:
-            #TODO: this never prints - debug this.
             initial_output += "Will connect to IPv6 servers over interface %s at %s\n" % (iface_ipv6.name, iface_ipv6.addr.address)
             CONNECT_HOST["ipv6"] = iface_ipv6.addr.address
     print(initial_output)
 except Exception as e:
-    print(e)
+    print("Address detection failed: %s: %s" % (type(e).__name__, e))
+    #initiate a traceback
+    import traceback
+    traceback.print_exc()
+
     interfaces = None
 
 try:
