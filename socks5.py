@@ -20,7 +20,7 @@ if 'Pythonista' in sys.executable:
 
 
 
-
+shutdown_event = threading.Event()
 inbound_traffic = 0
 outbound_traffic = 0
 total_inbound_traffic = 0
@@ -519,7 +519,7 @@ def print_traffic_info():
     global outbound_traffic
     global total_inbound_traffic
     global total_outbound_traffic
-    while True:
+    while not shutdown_event.is_set():  # Check if the event is set
         time.sleep(5)
         with traffic_lock:
             inbound_mbps = (inbound_traffic * 8) / (5 * 1024 * 1024)
@@ -570,5 +570,6 @@ if __name__ == '__main__':
         server.serve_forever()
     except KeyboardInterrupt:
         print("Shutting down.")
+        shutdown_event.set()  # Signal the event
         server.shutdown()
         wpad_server.shutdown()
