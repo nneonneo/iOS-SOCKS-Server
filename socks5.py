@@ -18,7 +18,7 @@ import time
 # IP over which the proxy will be available (probably WiFi IP)
 PROXY_HOST = "172.20.10.1"
 # IP over which the proxy will attempt to connect to the Internet
-CONNECT_HOST = None
+CONNECT_HOST = {"ipv4": None, "ipv6": None}
 # Time out connections after being idle for this long (in seconds)
 IDLE_TIMEOUT = 1800
 
@@ -71,10 +71,16 @@ try:
         print('Warning: could not get WiFi address; assuming %s' % PROXY_HOST)
 
     if iftypes['cell']:
-        iface = iftypes['cell'][0]
-        print("Will connect to servers over interface %s at %s" %
-              (iface.name, iface.addr.address))
-        CONNECT_HOST = iface.addr.address
+        iface_ipv4 = next((iface for iface in iftypes['cell'] if iface.addr.family == socket.AF_INET), None)
+        iface_ipv6 = next((iface for iface in iftypes['cell'] if iface.addr.family == socket.AF_INET6), None)
+        if iface_ipv4:
+            print("Will connect to servers over interface %s at %s" %
+                  (iface_ipv4.name, iface_ipv4.addr.address))
+            CONNECT_HOST["ipv4"] = iface_ipv4.addr.address
+        if iface_ipv6:
+            print("Will connect to servers over interface %s at %s" %
+                  (iface_ipv6.name, iface_ipv6.addr.address))
+            CONNECT_HOST["ipv6"] = iface_ipv6.addr.address
 except Exception as e:
     print(e)
     interfaces = None
@@ -106,7 +112,6 @@ class ThreadingTCPServer(ThreadingMixIn, TCPServer):
 
 
 def readall(f, n):
-    # read n bytes from f
     res = bytearray()
     while len(res) < n:
         chunk = f.read(n - len(res))
@@ -117,7 +122,6 @@ def readall(f, n):
 
 
 def readstruct(f, fmt):
-    # read a struct from f
     return struct.unpack(fmt, readall(f, struct.calcsize(fmt)))
 
 
@@ -213,7 +217,7 @@ class SocksProxy(StreamRequestHandler):
 
             def resolve_query(query_type):
                 try:
-                    addrs = resolver.query(address, query_type, source=CONNECT_HOST)
+                    addrs = resolver.query(address, query_type, source=CONNECT_HOST['ipv4'])
                     if addrs:
                         return random.choice(addrs).address
                 except Exception:
@@ -267,32 +271,36 @@ class SocksProxy(StreamRequestHandler):
         log_tag = '%s:%s -> %s:%s' % (self.client_address + (address, port))
 
         if isinstance(address, dict):
-            ipv4 = address['ipv4']
-            ipv6 = address['ipv6']
+            ipv4 = address.get('ipv4')
+            ipv6 = address.get('ipv6')
         else:
             ipv4 = address
             ipv6 = None
 
-        if ipv6 is not None:
+        if ipv6 is not None or ipv4 is not None:
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                ipv6_future = executor.submit(self.connect_to_address, ipv6, port, socket.AF_INET6, log_tag)
-
-                # Start IPv4 connection after 300ms delay
-                ipv4_future = executor.submit(self.delayed_connect, ipv4, port, socket.AF_INET, 0.3, log_tag)
-
-                future_to_socket = {ipv6_future: 'ipv6', ipv4_future: 'ipv4'}
+                future_to_socket = {}
+                if ipv6 is not None:
+                    ipv6_future = executor.submit(self.connect_to_address, ipv6, port, socket.AF_INET6, log_tag)
+                    future_to_socket[ipv6_future] = 'ipv6'
+                if ipv4 is not None:
+                    # Start IPv4 connection after 300ms delay
+                    ipv4_future = executor.submit(self.delayed_connect, ipv4, port, socket.AF_INET, 0.3, log_tag)
+                    future_to_socket[ipv4_future] = 'ipv4'
 
                 for future in concurrent.futures.as_completed(future_to_socket):
                     remote = future.result()
                     if remote is not None:
                         # Cancel the other future and close its socket
-                        other_future = next(f for f in future_to_socket if f != future)
-                        other_future.cancel()
-                        try:
-                            other_socket = other_future.result()
-                            other_socket.close()
-                        except Exception:
-                            pass
+#                        other_future = next(f for f in future_to_socket if f != future)
+                        other_future = next((f for f in future_to_socket if f != future), None)
+                        if other_future is not None:
+                            other_future.cancel()
+                            try:
+                                other_socket = other_future.result()
+                                other_socket.close()
+                            except Exception:
+                                pass
                         break
                 else:
                     logging.error('%s: connect error', log_tag)
@@ -331,7 +339,12 @@ class SocksProxy(StreamRequestHandler):
         try:
             remote = socket.socket(family, socket.SOCK_STREAM)
             if CONNECT_HOST:
-                remote.bind((CONNECT_HOST, 0))
+                if family == socket.AF_INET and "ipv4" in CONNECT_HOST:
+                    if CONNECT_HOST["ipv4"]:
+                        remote.bind((CONNECT_HOST["ipv4"], 0))
+                elif family == socket.AF_INET6 and "ipv6" in CONNECT_HOST:
+                    if CONNECT_HOST["ipv6"]:
+                        remote.bind((CONNECT_HOST["ipv6"], 0))
             remote.connect((address, port))
             logging.debug('%s: connected to %s:%s', log_tag, address, port)
             return remote
@@ -404,7 +417,10 @@ class SocksProxy(StreamRequestHandler):
             # remote-side socket
             ssock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             if CONNECT_HOST:
-                ssock.bind((CONNECT_HOST, 0))
+                if "ipv4" in CONNECT_HOST:
+                    ssock.bind((CONNECT_HOST["ipv4"], 0))
+                elif "ipv6" in CONNECT_HOST:
+                    ssock.bind((CONNECT_HOST["ipv6"], 0))
             logging.info('%s: udp association established', log_tag)
         except Exception as err:
             logging.error('%s: udp association error %s', log_tag, err)
