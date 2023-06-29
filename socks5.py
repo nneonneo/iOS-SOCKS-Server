@@ -12,8 +12,19 @@ import threading
 from socketserver import ThreadingMixIn, TCPServer, StreamRequestHandler
 import concurrent.futures
 import time
+from datetime import datetime
+import sys
+if 'Pythonista' in sys.executable:
+    import console
 
 
+
+
+
+inbound_traffic = 0
+outbound_traffic = 0
+initial_output = ""
+traffic_lock = threading.Lock()
 
 # IP over which the proxy will be available (probably WiFi IP)
 PROXY_HOST = "172.20.10.1"
@@ -57,30 +68,28 @@ try:
         else:
             iftypes['cell'].append(iface)
 
+
     if iftypes['bridge']:
         iface = iftypes['bridge'][0]
-        print("Assuming proxy will be accessed over hotspot (%s) at %s" %
-              (iface.name, iface.addr.address))
+        initial_output = "Assuming proxy will be accessed over hotspot (%s) at %s\n" % (iface.name, iface.addr.address)
         PROXY_HOST = iface.addr.address
     elif iftypes['en']:
         iface = iftypes['en'][0]
-        print("Assuming proxy will be accessed over WiFi (%s) at %s" %
-              (iface.name, iface.addr.address))
+        initial_output += "Assuming proxy will be accessed over WiFi (%s) at %s\n" % (iface.name, iface.addr.address)
         PROXY_HOST = iface.addr.address
     else:
-        print('Warning: could not get WiFi address; assuming %s' % PROXY_HOST)
+        initial_output += 'Warning: could not get WiFi address; assuming %s\n' % PROXY_HOST
 
     if iftypes['cell']:
         iface_ipv4 = next((iface for iface in iftypes['cell'] if iface.addr.family == socket.AF_INET), None)
         iface_ipv6 = next((iface for iface in iftypes['cell'] if iface.addr.family == socket.AF_INET6), None)
         if iface_ipv4:
-            print("Will connect to servers over interface %s at %s" %
-                  (iface_ipv4.name, iface_ipv4.addr.address))
+            initial_output += "Will connect to servers over interface %s at %s\n" % (iface_ipv4.name, iface_ipv4.addr.address)
             CONNECT_HOST["ipv4"] = iface_ipv4.addr.address
         if iface_ipv6:
-            print("Will connect to servers over interface %s at %s" %
-                  (iface_ipv6.name, iface_ipv6.addr.address))
+            initial_output += "Will connect to servers over interface %s at %s\n" % (iface_ipv6.name, iface_ipv6.addr.address)
             CONNECT_HOST["ipv6"] = iface_ipv6.addr.address
+    print(initial_output)
 except Exception as e:
     print(e)
     interfaces = None
@@ -252,8 +261,9 @@ class SocksProxy(StreamRequestHandler):
         return address, port
 
     def tcp_loop(self, sock1, sock2):
+        global inbound_traffic
+        global outbound_traffic
         while True:
-            # wait until client or remote is available for read
             r, _, _ = select([sock1, sock2], [], [], IDLE_TIMEOUT)
             if not r:
                 raise socket.timeout()
@@ -263,12 +273,16 @@ class SocksProxy(StreamRequestHandler):
                 if not data:
                     break
                 sock2.sendall(data)
+                with traffic_lock:
+                    outbound_traffic += len(data)
 
             if sock2 in r:
                 data = sock2.recv(4096)
                 if not data:
                     break
                 sock1.sendall(data)
+                with traffic_lock:
+                    inbound_traffic += len(data)
 
     def handle_connect(self, address, port):
         log_tag = '%s:%s -> %s:%s' % (self.client_address + (address, port))
@@ -357,6 +371,9 @@ class SocksProxy(StreamRequestHandler):
         return self.connect_to_address(address, port, family, log_tag)
 
     def udp_loop(self, controlsock, csock, ssock):
+        global inbound_traffic
+        global outbound_traffic
+
         log_tag = '%s:%s [udp]' % self.client_address
         connections = {}
 
@@ -491,8 +508,37 @@ def run_wpad_server(server):
     except KeyboardInterrupt:
         pass
 
+def print_traffic_info():
+    global inbound_traffic
+    global outbound_traffic
+    while True:
+        time.sleep(30)
+        with traffic_lock:
+            inbound_mbps = (inbound_traffic * 8) / (30 * 1024 * 1024)
+            outbound_mbps = (outbound_traffic * 8) / (30 * 1024 * 1024)
+            inbound_traffic = 0
+            outbound_traffic = 0
+        # Clear the console
+        if 'Pythonista' in sys.executable:
+            console.clear()
+        else:
+            print('\033c', end='')
+# print initial_output
+        print(initial_output)
+        print("PAC URL: http://{}:{}/wpad.dat".format(PROXY_HOST, WPAD_PORT))
+        print("SOCKS Address: {}:{}".format(PROXY_HOST or SOCKS_HOST, SOCKS_PORT))
+
+        # Print the table
+        print(f"{'Direction':<10} | {'Traffic (Mbps)':<15}")
+        print(f"{'-'*10} | {'-'*15}")
+        print(f"{'Inbound':<10} | {inbound_mbps:<15.2f}")
+        print(f"{'Outbound':<10} | {outbound_mbps:<15.2f}")
 
 if __name__ == '__main__':
+    traffic_thread = threading.Thread(target=print_traffic_info)
+    traffic_thread.daemon = True
+    traffic_thread.start()
+
     wpad_server = create_wpad_server(
         SOCKS_HOST, WPAD_PORT, PROXY_HOST, SOCKS_PORT
     )
