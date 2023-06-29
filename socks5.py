@@ -99,7 +99,7 @@ except ImportError:
     resolver = None
 
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 SOCKS_VERSION = 5
 SOCKS_HOST = '0.0.0.0'
 SOCKS_PORT = 9876
@@ -161,7 +161,7 @@ class SocksProxy(StreamRequestHandler):
     def handle(self):
         log_tag = '%s:%s' % self.client_address
 
-        logging.info('%s: new connection', log_tag)
+        logging.debug('%s: new connection', log_tag)
 
         sockfile = self.connection.makefile('rb')
 
@@ -332,7 +332,7 @@ class SocksProxy(StreamRequestHandler):
         except Exception:
             pass
 
-        logging.info('%s: shutting down', log_tag)
+        logging.debug('%s: shutting down', log_tag)
         self.server.close_request(self.request)
 
     def connect_to_address(self, address, port, family, log_tag):
@@ -383,7 +383,7 @@ class SocksProxy(StreamRequestHandler):
                     if address_type == self.ATYP_DOMAIN:
                         address = self.resolve_address(address, force=True)
                     if (address, port) not in connections:
-                        logging.info(
+                        logging.debug(
                             '%s: new connection to %s:%s',
                             log_tag, address, port
                         )
@@ -421,7 +421,7 @@ class SocksProxy(StreamRequestHandler):
                     ssock.bind((CONNECT_HOST["ipv4"], 0))
                 elif "ipv6" in CONNECT_HOST:
                     ssock.bind((CONNECT_HOST["ipv6"], 0))
-            logging.info('%s: udp association established', log_tag)
+            logging.debug('%s: udp association established', log_tag)
         except Exception as err:
             logging.error('%s: udp association error %s', log_tag, err)
             self.send_reply(self.STATUS_ERROR)
@@ -448,7 +448,7 @@ class SocksProxy(StreamRequestHandler):
         except Exception:
             pass
 
-        logging.info('%s: shutting down', log_tag)
+        logging.debug('%s: shutting down', log_tag)
         self.server.close_request(self.request)
 
 
