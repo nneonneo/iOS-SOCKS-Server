@@ -14,6 +14,7 @@ import concurrent.futures
 import time
 from datetime import datetime
 import sys
+import ipaddress
 if 'Pythonista' in sys.executable:
     import console
 
@@ -42,6 +43,22 @@ try:
 except ImportError:
     pass
 
+def is_globally_routable(ipv6_address):
+    non_routable_networks = [
+        "ff00::/8",         # Multicast address range
+        "fe80::/10",        # Link-local address range
+        "fc00::/7",         # Unique local address range
+        "::/8",             # Unspecified address range
+        "2001:db8::/32",    # Documentation address range
+        "2001::/32",        # Teredo address range
+        "2002::/16",        # 6to4 address range
+        "ff02::/16",        # Link-local multicast address range
+    ]
+    for network in non_routable_networks:
+        if ipaddress.ip_address(ipv6_address) in ipaddress.ip_network(network):
+            return False
+    return True
+
 try:
     # We want the WiFi address so that clients know what IP to use.
     # We want the non-WiFi (cellular?) address so that we can force network
@@ -68,19 +85,21 @@ try:
 
 
     if iftypes['bridge']:
-        iface = iftypes['bridge'][0]
-        initial_output = "Assuming proxy will be accessed over hotspot (%s) at %s\n" % (iface.name, iface.addr.address)
-        PROXY_HOST = iface.addr.address
-    elif iftypes['en']:
-        iface = iftypes['en'][0]
-        initial_output += "Assuming proxy will be accessed over WiFi (%s) at %s\n" % (iface.name, iface.addr.address)
-        PROXY_HOST = iface.addr.address
-    else:
+        iface = next((iface for iface in iftypes['bridge'] if iface.addr.family == socket.AF_INET), None)
+        if iface:
+            initial_output = "Assuming proxy will be accessed over hotspot (%s) at %s\n" % (iface.name, iface.addr.address)
+            PROXY_HOST = iface.addr.address
+    if not PROXY_HOST and iftypes['en']:
+        iface = next((iface for iface in iftypes['en'] if iface.addr.family == socket.AF_INET), None)
+        if iface:
+            initial_output += "Assuming proxy will be accessed over WiFi (%s) at %s\n" % (iface.name, iface.addr.address)
+            PROXY_HOST = iface.addr.address
+    if not PROXY_HOST:
         initial_output += 'Warning: could not get WiFi address; assuming %s\n' % PROXY_HOST
 
     if iftypes['cell']:
         iface_ipv4 = next((iface for iface in iftypes['cell'] if iface.addr.family == socket.AF_INET), None)
-        iface_ipv6 = next((iface for iface in iftypes['cell'] if iface.addr.family == socket.AF_INET6), None)
+        iface_ipv6 = next((iface for iface in iftypes['cell'] if iface.addr.family == socket.AF_INET6 and is_globally_routable(iface.addr.address)), None)
         if iface_ipv4:
             initial_output += "Will connect to IPv4 servers over interface %s at %s\n" % (iface_ipv4.name, iface_ipv4.addr.address)
             CONNECT_HOST["ipv4"] = iface_ipv4.addr.address
@@ -116,7 +135,6 @@ WPAD_PORT = 80
 class ThreadingTCPServer(ThreadingMixIn, TCPServer):
     daemon_threads = True
     allow_reuse_address = True
-
 
 def readall(f, n):
     res = bytearray()
