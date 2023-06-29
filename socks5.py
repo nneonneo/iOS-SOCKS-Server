@@ -157,7 +157,10 @@ class SocksProxy(StreamRequestHandler):
     def send_reply(self, status, bindaddr=None):
         reply = struct.pack("!BBB", SOCKS_VERSION, status, 0)
         reply += self.encode_address(bindaddr)
-        self.connection.sendall(reply)
+        try:
+            self.connection.sendall(reply)
+        except BrokenPipeError:
+            print("Client closed the connection prematurely.")
 
     def handle(self):
         log_tag = '%s:%s' % self.client_address
@@ -280,34 +283,26 @@ class SocksProxy(StreamRequestHandler):
 
         if ipv6 is not None or ipv4 is not None:
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                future_to_socket = {}
                 if ipv6 is not None:
-                    ipv6_future = executor.submit(self.connect_to_address, ipv6, port, socket.AF_INET6, log_tag)
-                    future_to_socket[ipv6_future] = 'ipv6'
+                    ipv6_future = executor.submit(self.connect_to_address, ipv6, port, socket.AF_INET6, log_tag, timeout=5)
                 if ipv4 is not None:
                     # Start IPv4 connection after 300ms delay
                     ipv4_future = executor.submit(self.delayed_connect, ipv4, port, socket.AF_INET, 0.3, log_tag)
-                    future_to_socket[ipv4_future] = 'ipv4'
 
-                for future in concurrent.futures.as_completed(future_to_socket):
-                    remote = future.result()
-                    if remote is not None:
-                        # Cancel the other future and close its socket
-#                        other_future = next(f for f in future_to_socket if f != future)
-                        other_future = next((f for f in future_to_socket if f != future), None)
-                        if other_future is not None:
-                            other_future.cancel()
-                            try:
-                                other_socket = other_future.result()
-                                other_socket.close()
-                            except Exception:
-                                pass
-                        break
-                else:
-                    logging.error('%s: connect error', log_tag)
-                    self.send_reply(self.STATUS_ECONNREFUSED)
-                    self.server.close_request(self.request)
-                    return
+                while True:
+                    if ipv6 is not None and ipv6_future.done():
+                        remote = ipv6_future.result()
+                        if remote is not None:
+                            if ipv4 is not None:
+                                ipv4_future.cancel()
+                            break
+                    if ipv4 is not None and ipv4_future.done():
+                        remote = ipv4_future.result()
+                        if remote is not None:
+                            if ipv6 is not None:
+                                ipv6_future.cancel()
+                            break
+                    time.sleep(0.01)  # Avoid busy-waiting
         else:
             try:
                 remote = self.connect_to_address(ipv4, port, socket.AF_INET, log_tag)
@@ -319,7 +314,10 @@ class SocksProxy(StreamRequestHandler):
                 self.server.close_request(self.request)
                 return
 
-        self.send_reply(self.STATUS_SUCCEEDED)
+        try:
+            self.send_reply(self.STATUS_SUCCEEDED)
+        except BrokenPipeError:
+            print("Client closed the connection prematurely.")
 
         try:
             self.tcp_loop(self.connection, remote)
@@ -336,9 +334,11 @@ class SocksProxy(StreamRequestHandler):
         logging.debug('%s: shutting down', log_tag)
         self.server.close_request(self.request)
 
-    def connect_to_address(self, address, port, family, log_tag):
+
+    def connect_to_address(self, address, port, family, log_tag, timeout=None):
         try:
             remote = socket.socket(family, socket.SOCK_STREAM)
+            remote.settimeout(timeout)
             if CONNECT_HOST:
                 if family == socket.AF_INET and "ipv4" in CONNECT_HOST:
                     if CONNECT_HOST["ipv4"]:

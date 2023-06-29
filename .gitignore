@@ -1,2 +1,3 @@
 *.pyc
 .gitignore
+.DS_Store
