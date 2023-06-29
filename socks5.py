@@ -1,6 +1,7 @@
 #!python3
 # Original from https://github.com/rushter/socks5/blob/master/server.py
 # Modified for Pythonista by @nneonneo
+# IPv6 support added by @philrosenthal
 
 from io import BytesIO
 import logging
