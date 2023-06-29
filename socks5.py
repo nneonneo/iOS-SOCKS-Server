@@ -9,6 +9,11 @@ import socket
 import struct
 import threading
 from socketserver import ThreadingMixIn, TCPServer, StreamRequestHandler
+from concurrent.futures import ThreadPoolExecutor
+import concurrent.futures
+import time
+
+
 
 # IP over which the proxy will be available (probably WiFi IP)
 PROXY_HOST = "172.20.10.1"
@@ -101,6 +106,7 @@ class ThreadingTCPServer(ThreadingMixIn, TCPServer):
 
 
 def readall(f, n):
+    # read n bytes from f
     res = bytearray()
     while len(res) < n:
         chunk = f.read(n - len(res))
@@ -111,6 +117,7 @@ def readall(f, n):
 
 
 def readstruct(f, fmt):
+    # read a struct from f
     return struct.unpack(fmt, readall(f, struct.calcsize(fmt)))
 
 
@@ -130,6 +137,7 @@ class SocksProxy(StreamRequestHandler):
     ATYP_IPV6 = 4
 
     def encode_address(self, sockaddr=None):
+        # encode sockaddr as SOCKS5 address
         if sockaddr is None:
             return struct.pack("!BIH", self.ATYP_IPV4, 0, 0)
 
@@ -198,14 +206,30 @@ class SocksProxy(StreamRequestHandler):
 
     def resolve_address(self, address, force=False):
         log_tag = '%s:%s' % self.client_address
+        result = {'ipv4': None, 'ipv6': None}
+
         if resolver:
             logging.debug('%s: resolving address %s', log_tag, address)
-            addrs = resolver.query(address, 'A', source=CONNECT_HOST)
-            if addrs:
-                return random.choice(addrs).address
-        if force:
-            return socket.gethostbyname(address)
-        return address
+
+            def resolve_query(query_type):
+                try:
+                    addrs = resolver.query(address, query_type, source=CONNECT_HOST)
+                    if addrs:
+                        return random.choice(addrs).address
+                except Exception:
+                    return None
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                future_ipv4 = executor.submit(resolve_query, 'A')
+                future_ipv6 = executor.submit(resolve_query, 'AAAA')
+
+                result['ipv4'] = future_ipv4.result()
+                result['ipv6'] = future_ipv6.result()
+
+        if force and not result['ipv4']:
+            result['ipv4'] = socket.gethostbyname(address)
+
+        return result
 
     def read_addrport(self, address_type, sockfile):
         if address_type == self.ATYP_IPV4:
@@ -241,17 +265,50 @@ class SocksProxy(StreamRequestHandler):
 
     def handle_connect(self, address, port):
         log_tag = '%s:%s -> %s:%s' % (self.client_address + (address, port))
-        try:
-            remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            if CONNECT_HOST:
-                remote.bind((CONNECT_HOST, 0))
-            remote.connect((address, port))
-            logging.info('%s: connected', log_tag)
-        except Exception as err:
-            logging.error('%s: connect error %s', log_tag, err)
-            self.send_reply(self.STATUS_ECONNREFUSED)
-            self.server.close_request(self.request)
-            return
+
+        if isinstance(address, dict):
+            ipv4 = address['ipv4']
+            ipv6 = address['ipv6']
+        else:
+            ipv4 = address
+            ipv6 = None
+
+        if ipv6 is not None:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                ipv6_future = executor.submit(self.connect_to_address, ipv6, port, socket.AF_INET6, log_tag)
+
+                # Start IPv4 connection after 300ms delay
+                ipv4_future = executor.submit(self.delayed_connect, ipv4, port, socket.AF_INET, 0.3, log_tag)
+
+                future_to_socket = {ipv6_future: 'ipv6', ipv4_future: 'ipv4'}
+
+                for future in concurrent.futures.as_completed(future_to_socket):
+                    remote = future.result()
+                    if remote is not None:
+                        # Cancel the other future and close its socket
+                        other_future = next(f for f in future_to_socket if f != future)
+                        other_future.cancel()
+                        try:
+                            other_socket = other_future.result()
+                            other_socket.close()
+                        except Exception:
+                            pass
+                        break
+                else:
+                    logging.error('%s: connect error', log_tag)
+                    self.send_reply(self.STATUS_ECONNREFUSED)
+                    self.server.close_request(self.request)
+                    return
+        else:
+            try:
+                remote = self.connect_to_address(ipv4, port, socket.AF_INET, log_tag)
+                if remote is None:
+                    raise Exception('Failed to connect')
+            except Exception as err:
+                logging.error('%s: connect error %s', log_tag, err)
+                self.send_reply(self.STATUS_ECONNREFUSED)
+                self.server.close_request(self.request)
+                return
 
         self.send_reply(self.STATUS_SUCCEEDED)
 
@@ -269,6 +326,22 @@ class SocksProxy(StreamRequestHandler):
 
         logging.info('%s: shutting down', log_tag)
         self.server.close_request(self.request)
+
+    def connect_to_address(self, address, port, family, log_tag):
+        try:
+            remote = socket.socket(family, socket.SOCK_STREAM)
+            if CONNECT_HOST:
+                remote.bind((CONNECT_HOST, 0))
+            remote.connect((address, port))
+            logging.debug('%s: connected to %s:%s', log_tag, address, port)
+            return remote
+        except Exception as e:
+            logging.debug('%s: failed to connect to %s:%s due to %s', log_tag, address, port, str(e))
+            return None
+
+    def delayed_connect(self, address, port, family, delay, log_tag):
+        time.sleep(delay)
+        return self.connect_to_address(address, port, family, log_tag)
 
     def udp_loop(self, controlsock, csock, ssock):
         log_tag = '%s:%s [udp]' % self.client_address
