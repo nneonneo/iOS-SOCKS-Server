@@ -23,8 +23,12 @@ if 'Pythonista' in sys.executable:
 
 inbound_traffic = 0
 outbound_traffic = 0
+total_inbound_traffic = 0
+total_outbound_traffic = 0
 initial_output = ""
 traffic_lock = threading.Lock()
+
+logging.basicConfig(level=logging.ERROR)
 
 # IP over which the proxy will be available (probably WiFi IP)
 PROXY_HOST = "172.20.10.1"
@@ -84,10 +88,11 @@ try:
         iface_ipv4 = next((iface for iface in iftypes['cell'] if iface.addr.family == socket.AF_INET), None)
         iface_ipv6 = next((iface for iface in iftypes['cell'] if iface.addr.family == socket.AF_INET6), None)
         if iface_ipv4:
-            initial_output += "Will connect to servers over interface %s at %s\n" % (iface_ipv4.name, iface_ipv4.addr.address)
+            initial_output += "Will connect to IPv4 servers over interface %s at %s\n" % (iface_ipv4.name, iface_ipv4.addr.address)
             CONNECT_HOST["ipv4"] = iface_ipv4.addr.address
         if iface_ipv6:
-            initial_output += "Will connect to servers over interface %s at %s\n" % (iface_ipv6.name, iface_ipv6.addr.address)
+            #TODO: this never prints - debug this.
+            initial_output += "Will connect to IPv6 servers over interface %s at %s\n" % (iface_ipv6.name, iface_ipv6.addr.address)
             CONNECT_HOST["ipv6"] = iface_ipv6.addr.address
     print(initial_output)
 except Exception as e:
@@ -108,7 +113,6 @@ except ImportError:
     resolver = None
 
 
-logging.basicConfig(level=logging.INFO)
 SOCKS_VERSION = 5
 SOCKS_HOST = '0.0.0.0'
 SOCKS_PORT = 9876
@@ -335,9 +339,12 @@ class SocksProxy(StreamRequestHandler):
         try:
             self.tcp_loop(self.connection, remote)
         except socket.timeout:
-            logging.error('%s: connection timed out', log_tag)
+            logging.info('%s: connection timed out', log_tag)
         except Exception as e:
-            logging.error('%s: forwarding error: %s', log_tag, e)
+            if str(e) == "[Errno 54] Connection reset by peer":
+                logging.info('%s: forwarding error: %s', log_tag, e)
+            else:
+                logging.error('%s: forwarding error: %s', log_tag, e)
 
         try:
             remote.close()
@@ -352,13 +359,12 @@ class SocksProxy(StreamRequestHandler):
         try:
             remote = socket.socket(family, socket.SOCK_STREAM)
             remote.settimeout(timeout)
-            if CONNECT_HOST:
-                if family == socket.AF_INET and "ipv4" in CONNECT_HOST:
-                    if CONNECT_HOST["ipv4"]:
-                        remote.bind((CONNECT_HOST["ipv4"], 0))
-                elif family == socket.AF_INET6 and "ipv6" in CONNECT_HOST:
-                    if CONNECT_HOST["ipv6"]:
-                        remote.bind((CONNECT_HOST["ipv6"], 0))
+            if family == socket.AF_INET and "ipv4" in CONNECT_HOST:
+                if CONNECT_HOST["ipv4"]:
+                    remote.bind((CONNECT_HOST["ipv4"], 0))
+            elif family == socket.AF_INET6 and "ipv6" in CONNECT_HOST:
+                if CONNECT_HOST["ipv6"]:
+                    remote.bind((CONNECT_HOST["ipv6"], 0))
             remote.connect((address, port))
             logging.debug('%s: connected to %s:%s', log_tag, address, port)
             return remote
@@ -511,11 +517,15 @@ def run_wpad_server(server):
 def print_traffic_info():
     global inbound_traffic
     global outbound_traffic
+    global total_inbound_traffic
+    global total_outbound_traffic
     while True:
-        time.sleep(30)
+        time.sleep(5)
         with traffic_lock:
-            inbound_mbps = (inbound_traffic * 8) / (30 * 1024 * 1024)
-            outbound_mbps = (outbound_traffic * 8) / (30 * 1024 * 1024)
+            inbound_mbps = (inbound_traffic * 8) / (5 * 1024 * 1024)
+            outbound_mbps = (outbound_traffic * 8) / (5 * 1024 * 1024)
+            total_inbound_traffic += inbound_traffic
+            total_outbound_traffic += outbound_traffic
             inbound_traffic = 0
             outbound_traffic = 0
         # Clear the console
@@ -529,10 +539,15 @@ def print_traffic_info():
         print("SOCKS Address: {}:{}".format(PROXY_HOST or SOCKS_HOST, SOCKS_PORT))
 
         # Print the table
-        print(f"{'Direction':<10} | {'Traffic (Mbps)':<15}")
-        print(f"{'-'*10} | {'-'*15}")
-        print(f"{'Inbound':<10} | {inbound_mbps:<15.2f}")
-        print(f"{'Outbound':<10} | {outbound_mbps:<15.2f}")
+        print(f"{'Direction':<12} | {'Traffic (Mbps)':<15}")
+        print(f"{'-'*12} | {'-'*15}")
+        print(f"{'Inbound':<12} | {inbound_mbps:<15.2f}")
+        print(f"{'Outbound':<12} | {outbound_mbps:<15.2f}")
+        # Print a blank line
+        print()
+        print(f"{'Total Inbound:':<14} {total_inbound_traffic / (1024 * 1024):>6.2f} MB")
+        print(f"{'Total Outbound:':<14} {total_outbound_traffic / (1024 * 1024):>5.2f} MB")
+        print(f"{'Total:':<14} {(total_inbound_traffic + total_outbound_traffic) / (1024 * 1024):>6.2f} MB")
 
 if __name__ == '__main__':
     traffic_thread = threading.Thread(target=print_traffic_info)
