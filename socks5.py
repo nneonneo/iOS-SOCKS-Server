@@ -313,7 +313,7 @@ class SocksProxy(StreamRequestHandler):
             ipv4 = address
             ipv6 = None
 
-        if ipv6 is not None or ipv4 is not None:
+        if (ipv6 is not None and "ipv6" in CONNECT_HOST and CONNECT_HOST["ipv6"]) or (ipv4 is not None and "ipv4" in CONNECT_HOST and CONNECT_HOST["ipv4"]):
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                 if ipv6 is not None:
                     ipv6_future = executor.submit(self.connect_to_address, ipv6, port, socket.AF_INET6, log_tag, timeout=5)
