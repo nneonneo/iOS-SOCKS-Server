@@ -1,7 +1,7 @@
 #!python3
 # Original from https://github.com/rushter/socks5/blob/master/server.py
 # Modified for Pythonista by @nneonneo
-# IPv6 support added by @philrosenthal
+# Pretty statistics view and IPv6 support added by @philrosenthal
 
 from io import BytesIO
 import logging
@@ -279,29 +279,30 @@ class SocksProxy(StreamRequestHandler):
         port, = readstruct(sockfile, "!H")
         return address, port
 
-    def tcp_loop(self, sock1, sock2):
+    def tcp_loop(self, csock, ssock):
         global inbound_traffic
         global outbound_traffic
         while True:
-            r, _, _ = select([sock1, sock2], [], [], IDLE_TIMEOUT)
+            r, _, _ = select([csock, ssock], [], [], IDLE_TIMEOUT)
             if not r:
                 raise socket.timeout()
 
-            if sock1 in r:
-                data = sock1.recv(4096)
+            if csock in r:
+                data = csock.recv(4096)
                 if not data:
                     break
-                sock2.sendall(data)
+                ssock.sendall(data)
                 with traffic_lock:
                     outbound_traffic += len(data)
 
-            if sock2 in r:
-                data = sock2.recv(4096)
+            if ssock in r:
+                data = ssock.recv(4096)
                 if not data:
                     break
-                sock1.sendall(data)
+                csock.sendall(data)
                 with traffic_lock:
                     inbound_traffic += len(data)
+
 
     def handle_connect(self, address, port):
         log_tag = '%s:%s -> %s:%s' % (self.client_address + (address, port))
@@ -428,6 +429,8 @@ class SocksProxy(StreamRequestHandler):
                     connections[address, port] = addr
                     # strip header and send to target host
                     ssock.sendto(sockfile.read(), (address, port))
+                    with traffic_lock:
+                        outbound_traffic += len(data)
                 except Exception as e:
                     logging.info('%s: malformed packet: %s', log_tag, e)
                     pass
@@ -444,6 +447,8 @@ class SocksProxy(StreamRequestHandler):
                     continue
                 header = struct.pack("!HB", 0, 0) + self.encode_address(addr)
                 csock.sendto(header + data, connections[addr])
+                with traffic_lock:
+                    inbound_traffic += len(data)
 
     def handle_udp(self, address, port):
         log_tag = '%s:%s [udp]' % (self.client_address)
