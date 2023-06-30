@@ -120,9 +120,8 @@ try:
             iftypes['en'].append(iface)
         elif iface.name.startswith('bridge'):
             iftypes['bridge'].append(iface)
-        elif iface.name == 'pdp_ip0':
+        else:
             iftypes['cell'].append(iface)
-
 
     if iftypes['bridge']:
         iface = next((iface for iface in iftypes['bridge'] if iface.addr.family == socket.AF_INET), None)
@@ -139,10 +138,17 @@ try:
 
     if iftypes['cell']:
         iface_ipv4 = next((iface for iface in iftypes['cell'] if iface.addr.family == socket.AF_INET), None)
-        iface_ipv6 = next((iface for iface in iftypes['cell'] if iface.addr.family == socket.AF_INET6 and iface.addr.address and is_globally_routable(iface.addr.address)), None)
+        iface_ipv6 = None
+
         if iface_ipv4:
             initial_output += "Will connect to IPv4 servers over interface %s at %s\n" % (iface_ipv4.name, iface_ipv4.addr.address)
             CONNECT_HOST["ipv4"] = iface_ipv4.addr.address
+
+            iface_ipv6 = next((iface for iface in iftypes['cell'] if iface.addr.family == socket.AF_INET6 and iface.addr.address and is_globally_routable(iface.addr.address) and iface.name == iface_ipv4.name), None)
+
+        if iface_ipv6 is None:
+            iface_ipv6 = next((iface for iface in iftypes['cell'] if iface.addr.family == socket.AF_INET6 and iface.addr.address and is_globally_routable(iface.addr.address)), None)
+
         if iface_ipv6:
             initial_output += "Will connect to IPv6 servers over interface %s at %s\n" % (iface_ipv6.name, iface_ipv6.addr.address)
             # Test IPv6 connectivity
@@ -158,14 +164,15 @@ try:
                 CONNECT_HOST["ipv6"] = None
             finally:
                 test_socket.close()
+
     print(initial_output)
 except Exception as e:
     print("Address detection failed: %s: %s" % (type(e).__name__, e))
-    #initiate a traceback
     import traceback
     traceback.print_exc()
 
     interfaces = None
+
 
 
 
