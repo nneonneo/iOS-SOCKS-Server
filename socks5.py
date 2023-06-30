@@ -128,12 +128,12 @@ try:
         if iface:
             initial_output = "Assuming proxy will be accessed over hotspot (%s) at %s\n" % (iface.name, iface.addr.address)
             PROXY_HOST = iface.addr.address
-    if not PROXY_HOST and iftypes['en']:
+    elif iftypes['en']:
         iface = next((iface for iface in iftypes['en'] if iface.addr.family == socket.AF_INET), None)
         if iface:
             initial_output += "Assuming proxy will be accessed over WiFi (%s) at %s\n" % (iface.name, iface.addr.address)
             PROXY_HOST = iface.addr.address
-    if not PROXY_HOST:
+    else:
         initial_output += 'Warning: could not get WiFi address; assuming %s\n' % PROXY_HOST
 
     if iftypes['cell']:
