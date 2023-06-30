@@ -15,6 +15,8 @@ import time
 from datetime import datetime
 import sys
 import ipaddress
+import http.client
+import urllib.parse
 if 'Pythonista' in sys.executable:
     import console
 
@@ -99,6 +101,57 @@ def resolve_address(address, force=False):
 
     return result
 
+def get_public_ip(ip_version):
+    if ip_version == 4:
+        url = "http://ip4only.me/api/"
+        source_ip = CONNECT_HOST['ipv4']
+    elif ip_version == 6:
+        url = "http://ip6only.me/api/"
+        source_ip = CONNECT_HOST['ipv6']
+    else:
+        raise ValueError("Invalid IP version")
+
+    parsed_url = urllib.parse.urlparse(url)
+    conn = http.client.HTTPConnection(parsed_url.netloc, source_address=(source_ip, 0))
+    conn.request("GET", parsed_url.path)
+    response = conn.getresponse()
+
+    if response.status != 200:
+        raise Exception("HTTP request failed with status %s" % response.status)
+
+    data = response.read().decode().split(",")
+    return data[1] if len(data) > 1 else None
+
+
+def query_whois(ip):
+    whois_server = "whois.cymru.com"
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.connect((whois_server, 43))
+    sock.sendall(ip.encode() + b"\r\n")
+
+    response = b""
+    while True:
+        d = sock.recv(4096)
+        response += d
+        if not d:
+            break
+    sock.close()
+
+    lines = response.decode().split("\n")
+    if len(lines) < 2:
+        return None
+
+    parts = lines[1].strip().split("|")
+    if len(parts) < 3:
+        return None
+
+    asn = parts[0].strip()
+    org = parts[2].strip()
+
+    return asn, org
+
+
 try:
     # We want the WiFi address so that clients know what IP to use.
     # We want the non-WiFi (cellular?) address so that we can force network
@@ -108,6 +161,10 @@ try:
 
     import ifaddrs
     from collections import defaultdict
+    initial_output = ''
+    ipv4_output = ''
+    ipv6_output = ''
+
     interfaces = ifaddrs.get_interfaces()
     iftypes = defaultdict(list)
     for iface in interfaces:
@@ -141,16 +198,30 @@ try:
         iface_ipv6 = None
 
         if iface_ipv4:
-            initial_output += "Will connect to IPv4 servers over interface %s at %s\n" % (iface_ipv4.name, iface_ipv4.addr.address)
+            iface_ipv4.addr.address
+            ipv4_output += "Will connect to IPv4 servers over interface %s at %s\n" % (iface_ipv4.name, iface_ipv4.addr.address)
             CONNECT_HOST["ipv4"] = iface_ipv4.addr.address
 
-            iface_ipv6 = next((iface for iface in iftypes['cell'] if iface.addr.family == socket.AF_INET6 and iface.addr.address and is_globally_routable(iface.addr.address) and iface.name == iface_ipv4.name), None)
+            public_ipv4 = get_public_ip(4)
+            asn, org = query_whois(public_ipv4)
+            initial_output += "Public IPv4: {} ({} / ASN: {})\n".format(public_ipv4, org, asn)
+
+            # Create a list of all IPv6 addresse that are globally routable and match the IPv4 interface
+            iface_ipv6_list = [iface for iface in iftypes['cell'] if iface.addr.family == socket.AF_INET6 and iface.addr.address and is_globally_routable(iface.addr.address) and iface.name == iface_ipv4.name]
+
+            # Select the last IPv6 address to select the temporary address for reduced tracking
+            iface_ipv6 = iface_ipv6_list[-1] if iface_ipv6_list else None
 
         if iface_ipv6 is None:
-            iface_ipv6 = next((iface for iface in iftypes['cell'] if iface.addr.family == socket.AF_INET6 and iface.addr.address and is_globally_routable(iface.addr.address)), None)
+            # Create a list of all IPv6 addresses that are globally routable
+            iface_ipv6_list = [iface for iface in iftypes['cell'] if iface.addr.family == socket.AF_INET6 and iface.addr.address and is_globally_routable(iface.addr.address)]
+
+            # Select the last IPv6 address to select the temporary address for reduced tracking
+            iface_ipv6 = iface_ipv6_list[-1] if iface_ipv6_list else None
 
         if iface_ipv6:
-            initial_output += "Will connect to IPv6 servers over interface %s at %s\n" % (iface_ipv6.name, iface_ipv6.addr.address)
+            iface_ipv6.addr.address
+            ipv6_output += "Will connect to IPv6 servers over interface %s at %s\n" % (iface_ipv6.name, iface_ipv6.addr.address)
             # Test IPv6 connectivity
             try:
                 test_socket = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
@@ -159,12 +230,18 @@ try:
                 test_socket.connect((resolve_address("www.google.com")["ipv6"], 80))
                 test_socket.close()
                 CONNECT_HOST["ipv6"] = iface_ipv6.addr.address
+
+                public_ipv6 = get_public_ip(6)
+                asn, org = query_whois(public_ipv6)
+                initial_output += "Public IPv6: {} ({} / ASN: {})\n".format(public_ipv6, org, asn)
             except Exception as e:
-                initial_output += "Failed to connect to www.google.com over IPv6 due to: %s\n" % str(e)
+                ipv6_output += "Failed to connect to www.google.com over IPv6 due to: %s\n" % str(e)
                 CONNECT_HOST["ipv6"] = None
             finally:
                 test_socket.close()
 
+    # Append ipv4 and ipv6 outputs to the initial output
+    initial_output += ipv4_output + ipv6_output
     print(initial_output)
 except Exception as e:
     print("Address detection failed: %s: %s" % (type(e).__name__, e))
