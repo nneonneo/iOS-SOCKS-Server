@@ -72,7 +72,7 @@ except ImportError:
     print("Warning: dnspython not available; falling back to system DNS")
     resolver = None
 
-def resolve_address_global(address, force=False):
+def resolve_address(address, force=False):
     log_tag = 'global'
     result = {'ipv4': None, 'ipv6': None}
 
@@ -120,7 +120,7 @@ try:
             iftypes['en'].append(iface)
         elif iface.name.startswith('bridge'):
             iftypes['bridge'].append(iface)
-        else:
+        elif iface.name == 'pdp_ip0':
             iftypes['cell'].append(iface)
 
 
@@ -150,12 +150,14 @@ try:
                 test_socket = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
                 test_socket.settimeout(5)
                 test_socket.bind((iface_ipv6.addr.address, 0))
-                test_socket.connect((resolve_address_global("www.google.com")["ipv6"], 80))
+                test_socket.connect((resolve_address("www.google.com")["ipv6"], 80))
                 test_socket.close()
                 CONNECT_HOST["ipv6"] = iface_ipv6.addr.address
             except Exception as e:
                 initial_output += "Failed to connect to www.google.com over IPv6 due to: %s\n" % str(e)
                 CONNECT_HOST["ipv6"] = None
+            finally:
+                test_socket.close()
     print(initial_output)
 except Exception as e:
     print("Address detection failed: %s: %s" % (type(e).__name__, e))
@@ -266,7 +268,7 @@ class SocksProxy(StreamRequestHandler):
         # reply
         if cmd == 1:  # CONNECT
             if address_type == self.ATYP_DOMAIN:
-                address = self.resolve_address(address)
+                address = resolve_address(address)
             self.handle_connect(address, port)
         elif cmd == 3:  # UDP ASSOCIATE
             # ignore the request host: the client might not actually know
@@ -276,9 +278,6 @@ class SocksProxy(StreamRequestHandler):
             logging.info('%s: command %d unsupported', log_tag, cmd)
             self.send_reply(self.STATUS_ENOTSUP)
             self.server.close_request(self.request)
-
-    def resolve_address(self, address, force=False):
-        return resolve_address_global(address, force)
 
     def read_addrport(self, address_type, sockfile):
         if address_type == self.ATYP_IPV4:
@@ -325,8 +324,12 @@ class SocksProxy(StreamRequestHandler):
             ipv4 = address.get('ipv4')
             ipv6 = address.get('ipv6')
         else:
-            ipv4 = address
-            ipv6 = None
+            if ':' in address:
+                ipv6 = address
+                ipv4 = None
+            else:
+                ipv4 = address
+                ipv6 = None
 
         if (ipv6 is not None and "ipv6" in CONNECT_HOST and CONNECT_HOST["ipv6"]) or (ipv4 is not None and "ipv4" in CONNECT_HOST and CONNECT_HOST["ipv4"]):
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
@@ -352,7 +355,10 @@ class SocksProxy(StreamRequestHandler):
                     time.sleep(0.01)  # Avoid busy-waiting
         else:
             try:
-                remote = self.connect_to_address(ipv4, port, socket.AF_INET, log_tag)
+                if ipv6 is not None:
+                    remote = self.connect_to_address(ipv6, port, socket.AF_INET6, log_tag)
+                elif ipv4 is not None:
+                    remote = self.connect_to_address(ipv4, port, socket.AF_INET, log_tag)
                 if remote is None:
                     raise Exception('Failed to connect')
             except Exception as err:
@@ -371,7 +377,7 @@ class SocksProxy(StreamRequestHandler):
         except socket.timeout:
             logging.info('%s: connection timed out', log_tag)
         except Exception as e:
-            if str(e) == "[Errno 54] Connection reset by peer":
+            if e.errno == errno.ECONNRESET:
                 logging.info('%s: forwarding error: %s', log_tag, e)
             else:
                 logging.error('%s: forwarding error: %s', log_tag, e)
@@ -434,7 +440,7 @@ class SocksProxy(StreamRequestHandler):
                     address, port = self.read_addrport(address_type, sockfile)
                     assert address is not None, "Address type is not supported"
                     if address_type == self.ATYP_DOMAIN:
-                        address = self.resolve_address(address, force=True)
+                        address = resolve_address(address, force=True)
                     if (address, port) not in connections:
                         logging.debug(
                             '%s: new connection to %s:%s',
