@@ -336,7 +336,7 @@ class SocksProxy(StreamRequestHandler):
                 if ipv6 is not None:
                     ipv6_future = executor.submit(self.connect_to_address, ipv6, port, socket.AF_INET6, log_tag, timeout=5)
                 if ipv4 is not None:
-                    # Start IPv4 connection after delay
+                    # Start IPv4 connection after 100ms delay
                     ipv4_future = executor.submit(self.delayed_connect, ipv4, port, socket.AF_INET, 0.1, log_tag)
 
                 while True:
