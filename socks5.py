@@ -420,10 +420,8 @@ class SocksProxy(StreamRequestHandler):
             remote = socket.socket(family, socket.SOCK_STREAM)
             remote.settimeout(timeout)
             if family == socket.AF_INET and CONNECT_HOST_IPV4:
-                if CONNECT_HOST_IPV4:
                     remote.bind((CONNECT_HOST_IPV4, 0))
             elif family == socket.AF_INET6 and CONNECT_HOST_IPV6:
-                if CONNECT_HOST_IPV6:
                     remote.bind((CONNECT_HOST_IPV6, 0))
             remote.connect((address, port))
             logging.debug('%s: connected to %s:%s', log_tag, address, port)
