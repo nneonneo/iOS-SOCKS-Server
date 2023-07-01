@@ -563,7 +563,8 @@ class SocksProxy(StreamRequestHandler):
             csock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             csock.bind((SOCKS_HOST, 0))
             # remote-side socket
-            ssock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            ssock_family = socket.AF_INET if "ipv4" in CONNECT_HOST else socket.AF_INET6
+            ssock = socket.socket(ssock_family, socket.SOCK_DGRAM)
             if CONNECT_HOST:
                 if "ipv4" in CONNECT_HOST:
                     ssock.bind((CONNECT_HOST["ipv4"], 0))
