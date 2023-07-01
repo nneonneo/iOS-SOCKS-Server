@@ -17,6 +17,7 @@ import sys
 import ipaddress
 import http.client
 import urllib.parse
+import errno
 if 'Pythonista' in sys.executable:
     import console
 
@@ -33,7 +34,8 @@ logging.basicConfig(level=logging.ERROR)
 # IP over which the proxy will be available (probably WiFi IP)
 PROXY_HOST = "172.20.10.1"
 # IP over which the proxy will attempt to connect to the Internet
-CONNECT_HOST = {"ipv4": None, "ipv6": None}
+CONNECT_HOST_IPV4 = None
+CONNECT_HOST_IPV6 = None
 # Time out connections after being idle for this long (in seconds)
 IDLE_TIMEOUT = 1800
 
@@ -83,7 +85,7 @@ def resolve_address(address, force=False):
 
         def resolve_query(query_type):
             try:
-                addrs = resolver.query(address, query_type, source=CONNECT_HOST['ipv4'])
+                addrs = resolver.query(address, query_type, source=CONNECT_HOST_IPV4)
                 if addrs:
                     return random.choice(addrs).address
             except Exception:
@@ -104,10 +106,10 @@ def resolve_address(address, force=False):
 def get_public_ip(ip_version):
     if ip_version == 4:
         url = "http://ip4only.me/api/"
-        source_ip = CONNECT_HOST['ipv4']
+        source_ip = CONNECT_HOST_IPV4
     elif ip_version == 6:
         url = "http://ip6only.me/api/"
-        source_ip = CONNECT_HOST['ipv6']
+        source_ip = CONNECT_HOST_IPV6
     else:
         raise ValueError("Invalid IP version")
 
@@ -200,7 +202,7 @@ try:
         if iface_ipv4:
             iface_ipv4.addr.address
             ipv4_output += "Will connect to IPv4 servers over interface %s at %s\n" % (iface_ipv4.name, iface_ipv4.addr.address)
-            CONNECT_HOST["ipv4"] = iface_ipv4.addr.address
+            CONNECT_HOST_IPV4 = iface_ipv4.addr.address
 
             public_ipv4 = get_public_ip(4)
             asn, org = query_whois(public_ipv4)
@@ -229,14 +231,14 @@ try:
                 test_socket.bind((iface_ipv6.addr.address, 0))
                 test_socket.connect((resolve_address("www.google.com")["ipv6"], 80))
                 test_socket.close()
-                CONNECT_HOST["ipv6"] = iface_ipv6.addr.address
+                CONNECT_HOST_IPV6 = iface_ipv6.addr.address
 
                 public_ipv6 = get_public_ip(6)
                 asn, org = query_whois(public_ipv6)
                 initial_output += "Public IPv6: {} ({} / ASN: {})\n".format(public_ipv6, org, asn)
             except Exception as e:
                 ipv6_output += "Failed to connect to www.google.com over IPv6 due to: %s\n" % str(e)
-                CONNECT_HOST["ipv6"] = None
+                CONNECT_HOST_IPV6 = None
             finally:
                 test_socket.close()
 
@@ -249,7 +251,6 @@ except Exception as e:
     traceback.print_exc()
 
     interfaces = None
-
 
 
 
@@ -415,8 +416,8 @@ class SocksProxy(StreamRequestHandler):
                 ipv4 = address
                 ipv6 = None
 
-        if (ipv6 is not None and "ipv6" in CONNECT_HOST and CONNECT_HOST["ipv6"]) and \
-        (ipv4 is not None and "ipv4" in CONNECT_HOST and CONNECT_HOST["ipv4"]):
+        if (ipv6 is not None and CONNECT_HOST_IPV6) and \
+        (ipv4 is not None and CONNECT_HOST_IPV4):
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                 if ipv6 is not None:
                     ipv6_future = executor.submit(self.connect_to_address, ipv6, port, socket.AF_INET6, log_tag, timeout=5)
@@ -440,9 +441,9 @@ class SocksProxy(StreamRequestHandler):
                     time.sleep(0.01)  # Avoid busy-waiting
         else:
             try:
-                if ipv6 is not None:
+                if ipv6 is not None and CONNECT_HOST_IPV6:
                     remote = self.connect_to_address(ipv6, port, socket.AF_INET6, log_tag)
-                elif ipv4 is not None:
+                elif ipv4 is not None and CONNECT_HOST_IPV4:
                     remote = self.connect_to_address(ipv4, port, socket.AF_INET, log_tag)
                 if remote is None:
                     raise Exception('Failed to connect')
@@ -480,12 +481,12 @@ class SocksProxy(StreamRequestHandler):
         try:
             remote = socket.socket(family, socket.SOCK_STREAM)
             remote.settimeout(timeout)
-            if family == socket.AF_INET and "ipv4" in CONNECT_HOST:
-                if CONNECT_HOST["ipv4"]:
-                    remote.bind((CONNECT_HOST["ipv4"], 0))
-            elif family == socket.AF_INET6 and "ipv6" in CONNECT_HOST:
-                if CONNECT_HOST["ipv6"]:
-                    remote.bind((CONNECT_HOST["ipv6"], 0))
+            if family == socket.AF_INET and CONNECT_HOST_IPV4:
+                if CONNECT_HOST_IPV4:
+                    remote.bind((CONNECT_HOST_IPV4, 0))
+            elif family == socket.AF_INET6 and CONNECT_HOST_IPV6:
+                if CONNECT_HOST_IPV6:
+                    remote.bind((CONNECT_HOST_IPV6, 0))
             remote.connect((address, port))
             logging.debug('%s: connected to %s:%s', log_tag, address, port)
             return remote
@@ -562,14 +563,31 @@ class SocksProxy(StreamRequestHandler):
             # client-side socket
             csock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             csock.bind((SOCKS_HOST, 0))
+            
+            # Check if the address is IPv4 or IPv6
+            try:
+                ip = ipaddress.ip_address(address)
+            except ValueError as e:
+                logging.error('%s: Invalid IP address %s', log_tag, e)
+                self.send_reply(self.STATUS_ERROR)
+                self.server.close_request(self.request)
+                return
+
             # remote-side socket
-            ssock_family = socket.AF_INET if "ipv4" in CONNECT_HOST else socket.AF_INET6
-            ssock = socket.socket(ssock_family, socket.SOCK_DGRAM)
-            if CONNECT_HOST:
-                if "ipv4" in CONNECT_HOST:
-                    ssock.bind((CONNECT_HOST["ipv4"], 0))
-                elif "ipv6" in CONNECT_HOST:
-                    ssock.bind((CONNECT_HOST["ipv6"], 0))
+            if ip.version == 4 and CONNECT_HOST_IPV4 is not None:
+                ssock_family = socket.AF_INET
+                ssock = socket.socket(ssock_family, socket.SOCK_DGRAM)
+                ssock.bind((CONNECT_HOST_IPV4, 0))
+            elif ip.version == 6 and CONNECT_HOST_IPV6 is not None:
+                ssock_family = socket.AF_INET6
+                ssock = socket.socket(ssock_family, socket.SOCK_DGRAM)
+                ssock.bind((CONNECT_HOST_IPV6, 0))
+            else:
+                logging.error('%s: No suitable IP version found', log_tag)
+                self.send_reply(self.STATUS_ERROR)
+                self.server.close_request(self.request)
+                return
+
             logging.debug('%s: udp association established', log_tag)
         except Exception as err:
             logging.error('%s: udp association error %s', log_tag, err)
