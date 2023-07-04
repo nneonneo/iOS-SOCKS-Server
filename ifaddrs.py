@@ -15,7 +15,7 @@ def get_sockaddr(sockaddr_p):
     elif sa_family == socket.AF_INET6:
         sin6 = copy_zerofill(SockaddrIn6(), sockaddr_p, sa_len)
         buf = create_string_buffer(46+1)
-        libc.inet_ntop(sa_family, sin6.sin6_addr, buf)
+        libc.inet_ntop(sa_family, byref(sin6.sin6_addr), buf)
         return SocketAddress(sa_family, buf.value.decode())
     else:
         sa_data = cast(sockaddr_p, POINTER(c_char*sa_len)).contents.raw
