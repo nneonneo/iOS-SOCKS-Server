@@ -100,6 +100,20 @@ def resolve_address(address, force=False):
 
     return result
 
+def first_non_none_future(fs):
+    # XXX: This is completely broken because it is not possible to cancel
+    # a future that has already started running.
+    while fs:
+        done, not_done = concurrent.futures.wait(fs, return_when=concurrent.futures.FIRST_COMPLETED)
+        for fut in done:
+            res = fut.result()
+            if res is not None:
+                for ofut in not_done:
+                    ofut.cancel()
+                return res
+        # None of the done futures were good, so keep going
+        fs = not_done
+
 try:
     # We want the WiFi address so that clients know what IP to use.
     # We want the non-WiFi (cellular?) address so that we can force network
@@ -363,10 +377,7 @@ class SocksProxy(StreamRequestHandler):
                     # Start IPv4 connection after 50ms delay
                     futures.append(executor.submit(self.delayed_connect, ipv4, port, socket.AF_INET, 0.05, log_tag))
 
-                done, not_done = concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_COMPLETED)
-                remote = next(iter(done)).result()
-                for fut in not_done:
-                    fut.cancel()
+                remote = first_non_none_future(futures)
         else:
             try:
                 remote = None
@@ -374,13 +385,16 @@ class SocksProxy(StreamRequestHandler):
                     remote = self.connect_to_address(ipv6, port, socket.AF_INET6, log_tag)
                 elif ipv4 is not None and CONNECT_HOST_IPV4:
                     remote = self.connect_to_address(ipv4, port, socket.AF_INET, log_tag)
-                if remote is None:
-                    raise Exception('Failed to connect')
             except Exception as err:
                 logging.error('%s: connect error %s', log_tag, err)
                 self.send_reply(self.STATUS_ECONNREFUSED)
                 self.server.close_request(self.request)
                 return
+
+        if remote is None:
+            self.send_reply(self.STATUS_EHOSTUNREACH)
+            self.server.close_request(self.request)
+            return
 
         try:
             self.send_reply(self.STATUS_SUCCEEDED)
