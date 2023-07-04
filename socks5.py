@@ -19,7 +19,6 @@ import errno
 if 'Pythonista' in sys.executable:
     import console
 
-shutdown_event = threading.Event()
 inbound_traffic = 0
 outbound_traffic = 0
 total_inbound_traffic = 0
@@ -357,28 +356,20 @@ class SocksProxy(StreamRequestHandler):
         if (ipv6 is not None and CONNECT_HOST_IPV6) and \
         (ipv4 is not None and CONNECT_HOST_IPV4):
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                futures = []
                 if ipv6 is not None:
-                    ipv6_future = executor.submit(self.connect_to_address, ipv6, port, socket.AF_INET6, log_tag, timeout=5)
+                    futures.append(executor.submit(self.connect_to_address, ipv6, port, socket.AF_INET6, log_tag, timeout=5))
                 if ipv4 is not None:
                     # Start IPv4 connection after 50ms delay
-                    ipv4_future = executor.submit(self.delayed_connect, ipv4, port, socket.AF_INET, 0.05, log_tag)
+                    futures.append(executor.submit(self.delayed_connect, ipv4, port, socket.AF_INET, 0.05, log_tag))
 
-                while True:
-                    if ipv6 is not None and ipv6_future.done():
-                        remote = ipv6_future.result()
-                        if remote is not None:
-                            if ipv4 is not None:
-                                ipv4_future.cancel()
-                            break
-                    if ipv4 is not None and ipv4_future.done():
-                        remote = ipv4_future.result()
-                        if remote is not None:
-                            if ipv6 is not None:
-                                ipv6_future.cancel()
-                            break
-                    time.sleep(0.01)  # Avoid busy-waiting
+                done, not_done = concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_COMPLETED)
+                remote = next(iter(done)).result()
+                for fut in not_done:
+                    fut.cancel()
         else:
             try:
+                remote = None
                 if ipv6 is not None and CONNECT_HOST_IPV6:
                     remote = self.connect_to_address(ipv6, port, socket.AF_INET6, log_tag)
                 elif ipv4 is not None and CONNECT_HOST_IPV4:
@@ -594,13 +585,15 @@ def run_wpad_server(server):
     except KeyboardInterrupt:
         pass
 
-def print_traffic_info():
+def print_traffic_info(shutdown_event):
     global inbound_traffic
     global outbound_traffic
     global total_inbound_traffic
     global total_outbound_traffic
-    while not shutdown_event.is_set():  # Check if the event is set
+    while True:
         time.sleep(5)
+        if shutdown_event.is_set():
+            break
         with traffic_lock:
             inbound_mbps = (inbound_traffic * 8) / (5 * 1024 * 1024)
             outbound_mbps = (outbound_traffic * 8) / (5 * 1024 * 1024)
@@ -629,7 +622,8 @@ def print_traffic_info():
         print(f"{'Total:':<14} {(total_inbound_traffic + total_outbound_traffic) / (1024 * 1024):>6.2f} MB")
 
 if __name__ == '__main__':
-    traffic_thread = threading.Thread(target=print_traffic_info)
+    traffic_shutdown_event = threading.Event()
+    traffic_thread = threading.Thread(target=print_traffic_info, args=(traffic_shutdown_event,))
     traffic_thread.daemon = True
     traffic_thread.start()
 
@@ -649,6 +643,6 @@ if __name__ == '__main__':
         server.serve_forever()
     except KeyboardInterrupt:
         print("Shutting down.")
-        shutdown_event.set()  # Signal the event
+        traffic_shutdown_event.set()  # Signal the event
         server.shutdown()
         wpad_server.shutdown()
