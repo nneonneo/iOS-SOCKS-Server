@@ -27,12 +27,13 @@
 
 """DNS name dictionary"""
 
-import collections
+# pylint seems to be confused about this one!
+from collections.abc import MutableMapping  # pylint: disable=no-name-in-module
+
 import dns.name
-from ._compat import xrange
 
 
-class NameDict(collections.MutableMapping):
+class NameDict(MutableMapping):
     """A dictionary whose keys are dns.name.Name objects.
 
     In addition to being like a regular Python dictionary, this
@@ -42,7 +43,7 @@ class NameDict(collections.MutableMapping):
     __slots__ = ["max_depth", "max_depth_items", "__store"]
 
     def __init__(self, *args, **kwargs):
-        super(NameDict, self).__init__()
+        super().__init__()
         self.__store = dict()
         #: the maximum depth of the keys that have ever been added
         self.max_depth = 0
@@ -62,13 +63,13 @@ class NameDict(collections.MutableMapping):
 
     def __setitem__(self, key, value):
         if not isinstance(key, dns.name.Name):
-            raise ValueError('NameDict key must be a name')
+            raise ValueError("NameDict key must be a name")
         self.__store[key] = value
         self.__update_max_depth(key)
 
     def __delitem__(self, key):
-        value = self.__store.pop(key)
-        if len(value) == self.max_depth:
+        self.__store.pop(key)
+        if len(key) == self.max_depth:
             self.max_depth_items = self.max_depth_items - 1
         if self.max_depth_items == 0:
             self.max_depth = 0
@@ -85,7 +86,7 @@ class NameDict(collections.MutableMapping):
         return key in self.__store
 
     def get_deepest_match(self, name):
-        """Find the deepest match to *fname* in the dictionary.
+        """Find the deepest match to *name* in the dictionary.
 
         The deepest match is the longest name in the dictionary which is
         a superdomain of *name*.  Note that *superdomain* includes matching
@@ -100,7 +101,7 @@ class NameDict(collections.MutableMapping):
         depth = len(name)
         if depth > self.max_depth:
             depth = self.max_depth
-        for i in xrange(-depth, 0):
+        for i in range(-depth, 0):
             n = dns.name.Name(name[i:])
             if n in self:
                 return (n, self[n])

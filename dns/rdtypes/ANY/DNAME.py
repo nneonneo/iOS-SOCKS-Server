@@ -16,11 +16,13 @@
 # OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 import dns.rdtypes.nsbase
+import dns.immutable
 
 
+@dns.immutable.immutable
 class DNAME(dns.rdtypes.nsbase.UncompressedNS):
 
     """DNAME record"""
 
-    def to_digestable(self, origin=None):
-        return self.target.to_digestable(origin)
+    def _to_wire(self, file, compress=None, origin=None, canonicalize=False):
+        self.target.to_wire(file, None, origin, canonicalize)

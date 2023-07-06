@@ -18,10 +18,16 @@
 """DNS rdata type classes"""
 
 __all__ = [
-    'ANY',
-    'IN',
-    'CH',
-    'euibase',
-    'mxbase',
-    'nsbase',
+    "ANY",
+    "IN",
+    "CH",
+    "dnskeybase",
+    "dsbase",
+    "euibase",
+    "mxbase",
+    "nsbase",
+    "svcbbase",
+    "tlsabase",
+    "txtbase",
+    "util",
 ]

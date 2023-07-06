@@ -16,16 +16,13 @@
 # OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 import dns.rdtypes.mxbase
+import dns.immutable
 
 
+@dns.immutable.immutable
 class AFSDB(dns.rdtypes.mxbase.UncompressedDowncasingMX):
 
-    """AFSDB record
-
-    @ivar subtype: the subtype value
-    @type subtype: int
-    @ivar hostname: the hostname name
-    @type hostname: dns.name.Name object"""
+    """AFSDB record"""
 
     # Use the property mechanism to make "subtype" an alias for the
     # "preference" attribute, and "hostname" an alias for the "exchange"
@@ -38,18 +35,12 @@ class AFSDB(dns.rdtypes.mxbase.UncompressedDowncasingMX):
     # implementation, but this way we don't copy code, and that's
     # good.
 
-    def get_subtype(self):
+    @property
+    def subtype(self):
+        "the AFSDB subtype"
         return self.preference
 
-    def set_subtype(self, subtype):
-        self.preference = subtype
-
-    subtype = property(get_subtype, set_subtype)
-
-    def get_hostname(self):
+    @property
+    def hostname(self):
+        "the AFSDB hostname"
         return self.exchange
-
-    def set_hostname(self, hostname):
-        self.exchange = hostname
-
-    hostname = property(get_hostname, set_hostname)

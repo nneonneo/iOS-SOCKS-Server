@@ -17,59 +17,49 @@
 
 """DNS Opcodes."""
 
+import dns.enum
 import dns.exception
 
-#: Query
-QUERY = 0
-#: Inverse Query (historical)
-IQUERY = 1
-#: Server Status (unspecified and unimplemented anywhere)
-STATUS = 2
-#: Notify
-NOTIFY = 4
-#: Dynamic Update
-UPDATE = 5
 
-_by_text = {
-    'QUERY': QUERY,
-    'IQUERY': IQUERY,
-    'STATUS': STATUS,
-    'NOTIFY': NOTIFY,
-    'UPDATE': UPDATE
-}
+class Opcode(dns.enum.IntEnum):
+    #: Query
+    QUERY = 0
+    #: Inverse Query (historical)
+    IQUERY = 1
+    #: Server Status (unspecified and unimplemented anywhere)
+    STATUS = 2
+    #: Notify
+    NOTIFY = 4
+    #: Dynamic Update
+    UPDATE = 5
 
-# We construct the inverse mapping programmatically to ensure that we
-# cannot make any mistakes (e.g. omissions, cut-and-paste errors) that
-# would cause the mapping not to be true inverse.
+    @classmethod
+    def _maximum(cls):
+        return 15
 
-_by_value = {y: x for x, y in _by_text.items()}
+    @classmethod
+    def _unknown_exception_class(cls):
+        return UnknownOpcode
 
 
 class UnknownOpcode(dns.exception.DNSException):
     """An DNS opcode is unknown."""
 
 
-def from_text(text):
+def from_text(text: str) -> Opcode:
     """Convert text into an opcode.
 
-    *text*, a ``text``, the textual opcode
+    *text*, a ``str``, the textual opcode
 
     Raises ``dns.opcode.UnknownOpcode`` if the opcode is unknown.
 
     Returns an ``int``.
     """
 
-    if text.isdigit():
-        value = int(text)
-        if value >= 0 and value <= 15:
-            return value
-    value = _by_text.get(text.upper())
-    if value is None:
-        raise UnknownOpcode
-    return value
+    return Opcode.from_text(text)
 
 
-def from_flags(flags):
+def from_flags(flags: int) -> Opcode:
     """Extract an opcode from DNS message flags.
 
     *flags*, an ``int``, the DNS flags.
@@ -77,10 +67,10 @@ def from_flags(flags):
     Returns an ``int``.
     """
 
-    return (flags & 0x7800) >> 11
+    return Opcode((flags & 0x7800) >> 11)
 
 
-def to_flags(value):
+def to_flags(value: Opcode) -> int:
     """Convert an opcode to a value suitable for ORing into DNS message
     flags.
 
@@ -92,23 +82,20 @@ def to_flags(value):
     return (value << 11) & 0x7800
 
 
-def to_text(value):
+def to_text(value: Opcode) -> str:
     """Convert an opcode to text.
 
     *value*, an ``int`` the opcode value,
 
     Raises ``dns.opcode.UnknownOpcode`` if the opcode is unknown.
 
-    Returns a ``text``.
+    Returns a ``str``.
     """
 
-    text = _by_value.get(value)
-    if text is None:
-        text = str(value)
-    return text
+    return Opcode.to_text(value)
 
 
-def is_update(flags):
+def is_update(flags: int) -> bool:
     """Is the opcode in flags UPDATE?
 
     *flags*, an ``int``, the DNS message flags.
@@ -116,4 +103,15 @@ def is_update(flags):
     Returns a ``bool``.
     """
 
-    return from_flags(flags) == UPDATE
+    return from_flags(flags) == Opcode.UPDATE
+
+
+### BEGIN generated Opcode constants
+
+QUERY = Opcode.QUERY
+IQUERY = Opcode.IQUERY
+STATUS = Opcode.STATUS
+NOTIFY = Opcode.NOTIFY
+UPDATE = Opcode.UPDATE
+
+### END generated Opcode constants

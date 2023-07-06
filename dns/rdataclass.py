@@ -17,54 +17,48 @@
 
 """DNS Rdata Classes."""
 
-import re
-
+import dns.enum
 import dns.exception
 
-RESERVED0 = 0
-IN = 1
-CH = 3
-HS = 4
-NONE = 254
-ANY = 255
 
-_by_text = {
-    'RESERVED0': RESERVED0,
-    'IN': IN,
-    'CH': CH,
-    'HS': HS,
-    'NONE': NONE,
-    'ANY': ANY
-}
+class RdataClass(dns.enum.IntEnum):
+    """DNS Rdata Class"""
 
-# We construct the inverse mapping programmatically to ensure that we
-# cannot make any mistakes (e.g. omissions, cut-and-paste errors) that
-# would cause the mapping not to be true inverse.
+    RESERVED0 = 0
+    IN = 1
+    INTERNET = IN
+    CH = 3
+    CHAOS = CH
+    HS = 4
+    HESIOD = HS
+    NONE = 254
+    ANY = 255
 
-_by_value = {y: x for x, y in _by_text.items()}
+    @classmethod
+    def _maximum(cls):
+        return 65535
 
-# Now that we've built the inverse map, we can add class aliases to
-# the _by_text mapping.
+    @classmethod
+    def _short_name(cls):
+        return "class"
 
-_by_text.update({
-    'INTERNET': IN,
-    'CHAOS': CH,
-    'HESIOD': HS
-})
+    @classmethod
+    def _prefix(cls):
+        return "CLASS"
 
-_metaclasses = {
-    NONE: True,
-    ANY: True
-}
+    @classmethod
+    def _unknown_exception_class(cls):
+        return UnknownRdataclass
 
-_unknown_class_pattern = re.compile('CLASS([0-9]+)$', re.I)
+
+_metaclasses = {RdataClass.NONE, RdataClass.ANY}
 
 
 class UnknownRdataclass(dns.exception.DNSException):
     """A DNS class is unknown."""
 
 
-def from_text(text):
+def from_text(text: str) -> RdataClass:
     """Convert text into a DNS rdata class value.
 
     The input text can be a defined DNS RR class mnemonic or
@@ -76,22 +70,14 @@ def from_text(text):
 
     Raises ``ValueError`` if the rdata class value is not >= 0 and <= 65535.
 
-    Returns an ``int``.
+    Returns a ``dns.rdataclass.RdataClass``.
     """
 
-    value = _by_text.get(text.upper())
-    if value is None:
-        match = _unknown_class_pattern.match(text)
-        if match is None:
-            raise UnknownRdataclass
-        value = int(match.group(1))
-        if value < 0 or value > 65535:
-            raise ValueError("class must be between >= 0 and <= 65535")
-    return value
+    return RdataClass.from_text(text)
 
 
-def to_text(value):
-    """Convert a DNS rdata type value to text.
+def to_text(value: RdataClass) -> str:
+    """Convert a DNS rdata class value to text.
 
     If the value has a known mnemonic, it will be used, otherwise the
     DNS generic class syntax will be used.
@@ -101,22 +87,32 @@ def to_text(value):
     Returns a ``str``.
     """
 
-    if value < 0 or value > 65535:
-        raise ValueError("class must be between >= 0 and <= 65535")
-    text = _by_value.get(value)
-    if text is None:
-        text = 'CLASS' + repr(value)
-    return text
+    return RdataClass.to_text(value)
 
 
-def is_metaclass(rdclass):
+def is_metaclass(rdclass: RdataClass) -> bool:
     """True if the specified class is a metaclass.
 
     The currently defined metaclasses are ANY and NONE.
 
-    *rdclass* is an ``int``.
+    *rdclass* is a ``dns.rdataclass.RdataClass``.
     """
 
     if rdclass in _metaclasses:
         return True
     return False
+
+
+### BEGIN generated RdataClass constants
+
+RESERVED0 = RdataClass.RESERVED0
+IN = RdataClass.IN
+INTERNET = RdataClass.INTERNET
+CH = RdataClass.CH
+CHAOS = RdataClass.CHAOS
+HS = RdataClass.HS
+HESIOD = RdataClass.HESIOD
+NONE = RdataClass.NONE
+ANY = RdataClass.ANY
+
+### END generated RdataClass constants
