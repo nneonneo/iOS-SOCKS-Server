@@ -217,11 +217,6 @@ class UdpForwarder:
 
 
 class AsyncSocks5Handler:
-    reader: asyncio.StreamReader
-    writer: asyncio.StreamWriter
-    server: "AsyncSocks5Server"
-    log_tag: str
-
     def __init__(
         self,
         reader: asyncio.StreamReader,
@@ -388,14 +383,6 @@ class AsyncSocks5Handler:
 
 
 class AsyncSocks5Server:
-    listen_hosts: str | Sequence[str]
-    listen_port: int
-    traffic_stats: status.TrafficStats
-    resolver: Resolver
-    resolver_source: str | None
-    connect_host_ipv4: str | None
-    connect_host_ipv6: str | None
-
     def __init__(
         self,
         listen_hosts: str | Sequence[str] = ("::", "0.0.0.0"),
@@ -411,6 +398,7 @@ class AsyncSocks5Server:
         self.resolver = resolver or Resolver()
         self.connect_host_ipv4 = connect_host_ipv4
         self.connect_host_ipv6 = connect_host_ipv6
+        self.resolver_source: str | None = None
         if self.connect_host_ipv4 is not None or self.connect_host_ipv6 is not None:
             resolver_afs = [af_for_address(ns) for ns in self.resolver.nameservers]
             if (
@@ -427,7 +415,7 @@ class AsyncSocks5Server:
                 any(af == socket.AF_INET6 for af in resolver_afs)
                 and self.connect_host_ipv6 is not None
             ):
-                self.resolver_source = self.connect_host_ipv4
+                self.resolver_source = self.connect_host_ipv6
                 self.resolver.nameservers = [
                     ns
                     for ns in self.resolver.nameservers
@@ -435,8 +423,6 @@ class AsyncSocks5Server:
                 ]
             else:
                 raise Exception("Resolver does not have any suitable nameservers!")
-        else:
-            self.resolver_source = None
 
     async def run(self) -> None:
         server = await asyncio.start_server(

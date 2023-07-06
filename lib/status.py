@@ -11,12 +11,6 @@ if "Pythonista" in sys.executable:
 
 
 class ThroughputTracker:
-    _interval: float
-    _window: int
-    _average: float
-    _total: int
-    _last_update: float
-
     def __init__(self, smoothing: float = 0.5):
         self._smoothing = smoothing
         self._window = 0
