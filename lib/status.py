@@ -24,14 +24,14 @@ class ThroughputTracker:
         self._total = 0
         self._last_update = time.time()
 
-    def add(self, amount):
+    def add(self, amount: int) -> None:
         self._window += amount
 
-    def update(self):
+    def update(self) -> tuple[float, int]:
         now = time.time()
         duration = now - self._last_update
         if duration < 0.1:
-            return
+            return (self._average, self._total)
 
         self._last_update = now
         new_speed = self._window / duration
@@ -43,57 +43,45 @@ class ThroughputTracker:
 
 
 class TrafficStats:
-    def add_inbound(self, nbytes: int):
+    def add_inbound(self, nbytes: int) -> None:
         ...
 
-    def add_outbound(self, nbytes: int):
+    def add_outbound(self, nbytes: int) -> None:
         ...
 
-    def add_connection(self):
+    def add_connection(self) -> None:
         ...
 
-    def remove_connection(self):
+    def remove_connection(self) -> None:
         ...
 
 
 class SimpleTrafficStats(TrafficStats):
-    inbound: int
-    outbound: int
-    connections: int
-
-    def __init__(self):
+    def __init__(self) -> None:
         self.inbound = 0
         self.outbound = 0
         self.connections = 0
 
-    def add_inbound(self, nbytes: int):
+    def add_inbound(self, nbytes: int) -> None:
         self.inbound += nbytes
 
-    def add_outbound(self, nbytes: int):
+    def add_outbound(self, nbytes: int) -> None:
         self.outbound += nbytes
 
-    def add_connection(self):
+    def add_connection(self) -> None:
         self.connections += 1
 
-    def remove_connection(self):
+    def remove_connection(self) -> None:
         self.connections -= 1
 
 
 class StatusMonitor(TrafficStats, logging.Handler):
-    banner: str
-    interval: float
-    inbound: ThroughputTracker
-    outbound: ThroughputTracker
-    num_connections: int
-    messages: list[str]
-    num_errors: int
-
     def __init__(
         self,
         banner: str,
         interval: float = 1,
         smoothing: float = 0.5,
-        log_level=logging.NOTSET,
+        log_level: int = logging.NOTSET,
     ):
         logging.Handler.__init__(self, log_level)
         self.banner = banner
@@ -101,29 +89,29 @@ class StatusMonitor(TrafficStats, logging.Handler):
         self.inbound = ThroughputTracker(smoothing)
         self.outbound = ThroughputTracker(smoothing)
         self.num_connections = 0
-        self.messages = []
+        self.messages: list[str] = []
         self.num_errors = 0
 
-    def add_inbound(self, nbytes: int):
+    def add_inbound(self, nbytes: int) -> None:
         self.inbound.add(nbytes)
 
-    def add_outbound(self, nbytes: int):
+    def add_outbound(self, nbytes: int) -> None:
         self.outbound.add(nbytes)
 
-    def add_connection(self):
+    def add_connection(self) -> None:
         self.num_connections += 1
 
-    def remove_connection(self):
+    def remove_connection(self) -> None:
         self.num_connections -= 1
 
-    def emit(self, record: logging.LogRecord):
+    def emit(self, record: logging.LogRecord) -> None:
         self.messages.append(self.format(record))
         if len(self.messages) > 5:
             self.messages = self.messages[-5:]
         if record.levelno >= logging.ERROR:
             self.num_errors += 1
 
-    async def render_forever(self):
+    async def render_forever(self) -> None:
         while True:
             await asyncio.sleep(self.interval)
 
@@ -168,7 +156,7 @@ if __name__ == "__main__":
     stats = StatusMonitor("Test mode", interval=1)
     logging.getLogger().addHandler(stats)
 
-    async def random_traffic():
+    async def random_traffic() -> None:
         stats.add_connection()
         while 1:
             await asyncio.sleep(0.1)
@@ -177,7 +165,7 @@ if __name__ == "__main__":
             if random.random() < 0.1:
                 logging.error("random error %d", random.randrange(100))
 
-    async def main():
+    async def main() -> None:
         asyncio.create_task(random_traffic())
         await stats.render_forever()
 

@@ -12,7 +12,7 @@ from asyncio.staggered import staggered_race
 from dataclasses import dataclass
 from enum import IntEnum
 from io import BytesIO
-from typing import Sequence
+from typing import Any, BinaryIO, Callable, Coroutine, Sequence
 
 from . import status
 from dns.asyncresolver import Resolver
@@ -26,10 +26,13 @@ HAPPY_EYEBALLS_DELAY = 0.05  # seconds
 CONNECT_TIMEOUT = 75  # seconds
 
 
+SocketAddress = tuple[str, int]
+
+
 @dataclass
 class GenericAddress:
-    ipv4: str | None = None
-    ipv6: str | None = None
+    ipv4: SocketAddress | None = None
+    ipv6: SocketAddress | None = None
 
 
 class Socks5Status(IntEnum):
@@ -50,7 +53,7 @@ class Socks5AddressType(IntEnum):
     IPV6 = 4
 
 
-def encode_address(sockaddr=None):
+def encode_address(sockaddr: SocketAddress | None = None) -> bytes:
     # encode sockaddr as SOCKS5 address
     if sockaddr is None:
         return struct.pack("!BIH", Socks5AddressType.IPV4, 0, 0)
@@ -64,7 +67,11 @@ def encode_address(sockaddr=None):
         return struct.pack("!B16sH", Socks5AddressType.IPV6, addrbytes, port)
 
 
-async def forwarder_loop(reader, writer, stat_fn):
+async def forwarder_loop(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    stat_fn: Callable[[int], None],
+) -> None:
     while 1:
         buf = await reader.read(65536)
         if not buf:
@@ -77,33 +84,35 @@ async def forwarder_loop(reader, writer, stat_fn):
 
 
 class UdpForwarderProtocol(asyncio.DatagramProtocol):
-    def __init__(self, method):
+    def __init__(
+        self,
+        method: Callable[
+            [asyncio.DatagramTransport, bytes, SocketAddress],
+            Coroutine[None, None, None],
+        ],
+    ):
         self.method = method
         self.loop = asyncio.get_running_loop()
 
-    def connection_made(self, transport):
+    def connection_made(self, transport: asyncio.DatagramTransport) -> None:
         self.transport = transport
 
-    def datagram_received(self, data, addr):
-        self.loop.create_task(self.method(self.transport, data, addr))
+    def datagram_received(self, data: bytes, addr: SocketAddress) -> None:
+        self.loop.create_task(self.method(self.transport, data, addr[:2]))
 
 
 class UdpForwarder:
-    client_conn: asyncio.DatagramTransport
-    server_conn_ipv4: asyncio.DatagramTransport | None
-    server_conn_ipv6: asyncio.DatagramTransport | None
-    server: "AsyncSocks5Server"
-    connections: dict
-
     def __init__(self, log_tag: str, server: "AsyncSocks5Server", local_address: str):
         self.log_tag = log_tag + " [udp]"
         self.server = server
         self.local_address = local_address
-        self.server_conn_ipv4 = None
-        self.server_conn_ipv6 = None
-        self.connections = {}
+        self.server_conn_ipv4: asyncio.DatagramTransport | None = None
+        self.server_conn_ipv6: asyncio.DatagramTransport | None = None
+        self.connections: dict[
+            tuple[asyncio.DatagramTransport, SocketAddress], SocketAddress
+        ] = {}
 
-    async def start(self):
+    async def start(self) -> None:
         loop = asyncio.get_running_loop()
         self.client_conn, _ = await loop.create_datagram_endpoint(
             lambda: UdpForwarderProtocol(self.on_client_datagram),
@@ -129,28 +138,29 @@ class UdpForwarder:
                 local_addr=(connect_host_ipv6, 0),
             )
 
-    async def on_client_datagram(self, transport, data, client_addr):
+    async def on_client_datagram(
+        self,
+        transport: asyncio.DatagramTransport,
+        data: bytes,
+        client_addr: SocketAddress,
+    ) -> None:
         sockfile = BytesIO(data)
         try:
             # decode header
             _, frag, address_type = self.readstruct(sockfile, "!HBB")
             assert frag == 0, "UDP fragmentation is not supported"
-            address, port = self.read_addrport(address_type, sockfile)
+            address = self.read_addrport(address_type, sockfile)
             assert address is not None, "Address type is not supported"
             payload = sockfile.read()
             self.server.traffic_stats.add_outbound(len(payload))
 
             resolved = await self.server.resolve_address(address_type, address)
             if resolved.ipv6 and self.server_conn_ipv6:
-                self.connections[
-                    self.server_conn_ipv6, (resolved.ipv6, port)
-                ] = client_addr
-                self.server_conn_ipv6.sendto(payload, (resolved.ipv6, port))
+                self.connections[self.server_conn_ipv6, resolved.ipv6] = client_addr
+                self.server_conn_ipv6.sendto(payload, resolved.ipv6)
             elif resolved.ipv4 and self.server_conn_ipv4:
-                self.connections[
-                    self.server_conn_ipv4, (resolved.ipv4, port)
-                ] = client_addr
-                self.server_conn_ipv4.sendto(payload, (resolved.ipv4, port))
+                self.connections[self.server_conn_ipv4, resolved.ipv4] = client_addr
+                self.server_conn_ipv4.sendto(payload, resolved.ipv4)
             else:
                 logging.info(
                     "%s: unable to send UDP packet to %s", self.log_tag, address
@@ -158,10 +168,12 @@ class UdpForwarder:
         except Exception as e:
             logging.info("%s: malformed udp packet: %s", self.log_tag, e)
 
-    async def on_server_datagram(self, transport, data, addr):
+    async def on_server_datagram(
+        self, transport: asyncio.DatagramTransport, data: bytes, addr: SocketAddress
+    ) -> None:
         self.server.traffic_stats.add_inbound(len(data))
 
-        client_addr = self.connections.get((transport, addr[:2]), None)
+        client_addr = self.connections.get((transport, addr), None)
         if client_addr is None:
             logging.warning(
                 "%s: got packet from unknown sender %s", self.log_tag, *addr
@@ -171,7 +183,7 @@ class UdpForwarder:
         header = struct.pack("!HB", 0, 0) + encode_address(addr)
         self.client_conn.sendto(header + data, client_addr)
 
-    def readall(self, f, n):
+    def readall(self, f: BinaryIO, n: int) -> bytes:
         res = bytearray()
         while len(res) < n:
             chunk = f.read(n - len(res))
@@ -180,10 +192,10 @@ class UdpForwarder:
             res += chunk
         return bytes(res)
 
-    def readstruct(self, f, fmt):
+    def readstruct(self, f: BinaryIO, fmt: str) -> tuple[Any, ...]:
         return struct.unpack(fmt, self.readall(f, struct.calcsize(fmt)))
 
-    def read_addrport(self, address_type, sockf):
+    def read_addrport(self, address_type: int, sockf: BinaryIO) -> SocketAddress | None:
         if address_type == Socks5AddressType.IPV4:
             address = socket.inet_ntop(socket.AF_INET, self.readall(sockf, 4))
         elif address_type == Socks5AddressType.DOMAIN:
@@ -192,11 +204,11 @@ class UdpForwarder:
         elif address_type == Socks5AddressType.IPV6:
             address = socket.inet_ntop(socket.AF_INET6, self.readall(sockf, 16))
         else:
-            return None, None
+            return None
         (port,) = self.readstruct(sockf, "!H")
         return address, port
 
-    def close(self):
+    def close(self) -> None:
         self.client_conn.close()
         if self.server_conn_ipv4:
             self.server_conn_ipv4.close()
@@ -232,16 +244,18 @@ class AsyncSocks5Handler:
         else:
             self.log_tag = "[%s]" % (peer_addr,)
 
-    def send_reply(self, status: Socks5Status, bindaddr=None):
+    def send_reply(
+        self, status: Socks5Status, bindaddr: tuple[str, int] | None = None
+    ) -> None:
         reply = struct.pack("!BBB", SOCKS_VERSION, status, 0)
         reply += encode_address(bindaddr)
         self.writer.write(reply)
 
-    async def readstruct(self, fmt: str) -> tuple:
+    async def readstruct(self, fmt: str) -> tuple[Any, ...]:
         data = await self.reader.readexactly(struct.calcsize(fmt))
         return struct.unpack(fmt, data)
 
-    async def _handle(self):
+    async def _handle(self) -> None:
         # receive client's auth methods
         version, nmethods = await self.readstruct("!BB")
         if version != SOCKS_VERSION:
@@ -264,27 +278,26 @@ class AsyncSocks5Handler:
         if version != SOCKS_VERSION:
             raise Exception("Invalid version %r after auth" % chr(version))
 
-        address, port = await self.read_addrport(address_type)
+        address = await self.read_addrport(address_type)
         if address is None:
             self.send_reply(Socks5Status.EAFNOSUPPORT)
             raise Exception("Unsupported address type %d" % address_type)
 
         # reply
         if cmd == 1:  # CONNECT
-            await self.handle_connect(address_type, address, port)
+            await self.handle_connect(address_type, address)
         elif cmd == 3:  # UDP ASSOCIATE
             # ignore the request host: the client might not actually know
             # its own address
             client_address = self.writer.get_extra_info("peername")
             if client_address:
-                await self.handle_udp(client_address[0], port)
-            else:
-                await self.handle_udp(address, port)
+                address = (client_address[0], address[1])
+            await self.handle_udp(address)
         else:
             self.send_reply(Socks5Status.ENOTSUP)
             raise Exception("Command %d unsupported" % cmd)
 
-    async def handle(self):
+    async def handle(self) -> None:
         try:
             await self._handle()
         except Exception as e:
@@ -294,7 +307,7 @@ class AsyncSocks5Handler:
                 self.writer.close()
                 await self.writer.wait_closed()
 
-    async def read_addrport(self, address_type: int) -> tuple[str | None, int | None]:
+    async def read_addrport(self, address_type: int) -> SocketAddress | None:
         if address_type == Socks5AddressType.IPV4:
             ip = await self.reader.readexactly(4)
             address = socket.inet_ntop(socket.AF_INET, ip)
@@ -305,21 +318,23 @@ class AsyncSocks5Handler:
             ip = await self.reader.readexactly(16)
             address = socket.inet_ntop(socket.AF_INET6, ip)
         else:
-            return None, None
+            return None
 
         (port,) = await self.readstruct("!H")
         return address, port
 
-    async def handle_connect(self, address_type, address, port):
+    async def handle_connect(self, address_type: int, address: SocketAddress) -> None:
         resolved = await self.server.resolve_address(address_type, address)
 
         try:
             if resolved.ipv4 is not None and resolved.ipv6 is not None:
+                ipv6_addr = resolved.ipv6
+                ipv4_addr = resolved.ipv4
                 # happy eyeballs
                 result, result_index, exceptions = await staggered_race(
                     [
-                        lambda: self.server.ipv6_connect(resolved.ipv6, port),
-                        lambda: self.server.ipv4_connect(resolved.ipv4, port),
+                        lambda: self.server.ipv6_connect(ipv6_addr),
+                        lambda: self.server.ipv4_connect(ipv4_addr),
                     ],
                     delay=HAPPY_EYEBALLS_DELAY,
                 )
@@ -327,11 +342,11 @@ class AsyncSocks5Handler:
                     raise exceptions[0]
                 connection = result
             elif resolved.ipv4 is not None:
-                connection = await self.server.ipv4_connect(resolved.ipv4, port)
+                connection = await self.server.ipv4_connect(resolved.ipv4)
             elif resolved.ipv6 is not None:
-                connection = await self.server.ipv6_connect(resolved.ipv6, port)
+                connection = await self.server.ipv6_connect(resolved.ipv6)
             else:
-                raise Exception("Host %s could not be resolved" % address)
+                raise Exception("Host %s could not be resolved" % (address,))
         except Exception as e:
             self.send_reply(Socks5Status.EHOSTUNREACH)
             raise e
@@ -349,9 +364,10 @@ class AsyncSocks5Handler:
             return_exceptions=True,
         )
 
-    async def handle_udp(self, address, port):
+    async def handle_udp(self, client_address: SocketAddress) -> None:
         csock_addr = self.writer.get_extra_info("sockname")[0]
 
+        # TODO: restrict incoming packets to client address
         try:
             udp_forwarder = UdpForwarder(self.log_tag, self.server, csock_addr)
             await udp_forwarder.start()
@@ -422,7 +438,7 @@ class AsyncSocks5Server:
         else:
             self.resolver_source = None
 
-    async def run(self):
+    async def run(self) -> None:
         server = await asyncio.start_server(
             self.client_connected,
             host=self.listen_hosts,
@@ -431,7 +447,9 @@ class AsyncSocks5Server:
         )
         await server.serve_forever()
 
-    async def client_connected(self, reader, writer):
+    async def client_connected(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
         handler = AsyncSocks5Handler(reader, writer, server=self)
         self.traffic_stats.add_connection()
         try:
@@ -439,52 +457,60 @@ class AsyncSocks5Server:
         finally:
             self.traffic_stats.remove_connection()
 
-    async def ipv4_connect(self, address, port):
+    async def ipv4_connect(
+        self, address: SocketAddress
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         local_addr = (
             (self.connect_host_ipv4, 0) if self.connect_host_ipv4 is not None else None
         )
         return await asyncio.wait_for(
-            asyncio.open_connection(address, port, local_addr=local_addr),
+            asyncio.open_connection(address[0], address[1], local_addr=local_addr),
             timeout=CONNECT_TIMEOUT,
         )
 
-    async def ipv6_connect(self, address, port):
+    async def ipv6_connect(
+        self, address: SocketAddress
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         local_addr = (
             (self.connect_host_ipv6, 0) if self.connect_host_ipv6 is not None else None
         )
         return await asyncio.wait_for(
-            asyncio.open_connection(address, port, local_addr=local_addr),
+            asyncio.open_connection(address[0], address[1], local_addr=local_addr),
             timeout=CONNECT_TIMEOUT,
         )
 
-    async def _resolve_domain(self, address: str) -> GenericAddress:
+    async def _resolve_domain(self, address: SocketAddress) -> GenericAddress:
+        domain, port = address
+
         result = GenericAddress()
         try:
-            socket.inet_pton(socket.AF_INET, address)
+            socket.inet_pton(socket.AF_INET, domain)
             result.ipv4 = address
             return result
         except Exception:
             pass
 
         try:
-            socket.inet_pton(socket.AF_INET6, address)
+            socket.inet_pton(socket.AF_INET6, domain)
             result.ipv6 = address
             return result
         except Exception:
             pass
 
         ipv4, ipv6 = await asyncio.gather(
-            self.resolver.resolve(address, "A", source=self.resolver_source),
-            self.resolver.resolve(address, "AAAA", source=self.resolver_source),
+            self.resolver.resolve(domain, "A", source=self.resolver_source),
+            self.resolver.resolve(domain, "AAAA", source=self.resolver_source),
             return_exceptions=True,
         )
         if not isinstance(ipv4, BaseException) and ipv4:
-            result.ipv4 = random.choice(ipv4).address
+            result.ipv4 = (random.choice(ipv4).address, port)
         if not isinstance(ipv6, BaseException) and ipv6:
-            result.ipv6 = random.choice(ipv6).address
+            result.ipv6 = (random.choice(ipv6).address, port)
         return result
 
-    async def resolve_address(self, address_type: int, address: str) -> GenericAddress:
+    async def resolve_address(
+        self, address_type: int, address: SocketAddress
+    ) -> GenericAddress:
         if address_type == Socks5AddressType.IPV4:
             result = GenericAddress(ipv4=address)
         elif address_type == Socks5AddressType.DOMAIN:
@@ -505,7 +531,7 @@ if __name__ == "__main__":
     stats = status.StatusMonitor("SOCKS5 Server", interval=1)
     logging.getLogger().addHandler(stats)
 
-    async def main():
+    async def main() -> None:
         server = AsyncSocks5Server(traffic_stats=stats)
         asyncio.create_task(server.run())
         await stats.render_forever()
