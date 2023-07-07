@@ -467,6 +467,9 @@ class AsyncSocks5Server:
             timeout=CONNECT_TIMEOUT,
         )
 
+    async def dummy_resolve(self):
+        raise Exception("address family not supported")
+
     async def _resolve_domain(self, address: SocketAddress) -> GenericAddress:
         domain, port = address
 
@@ -485,9 +488,19 @@ class AsyncSocks5Server:
         except Exception:
             pass
 
+        if self.connect_host_ipv4 is None and self.connect_host_ipv6 is not None:
+            ipv4_resolver = self.dummy_resolve()
+        else:
+            ipv4_resolver = self.resolver.resolve(domain, "A", source=self.resolver_source)
+
+        if self.connect_host_ipv4 is not None and self.connect_host_ipv6 is None:
+            ipv6_resolver = self.dummy_resolve()
+        else:
+            ipv6_resolver = self.resolver.resolve(domain, "AAAA", source=self.resolver_source)
+
         ipv4, ipv6 = await asyncio.gather(
-            self.resolver.resolve(domain, "A", source=self.resolver_source),
-            self.resolver.resolve(domain, "AAAA", source=self.resolver_source),
+            ipv4_resolver,
+            ipv6_resolver,
             return_exceptions=True,
         )
         if not isinstance(ipv4, BaseException) and ipv4:
