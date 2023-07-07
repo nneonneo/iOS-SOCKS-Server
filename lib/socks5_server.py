@@ -72,15 +72,17 @@ async def forwarder_loop(
     writer: asyncio.StreamWriter,
     stat_fn: Callable[[int], None],
 ) -> None:
-    while 1:
-        buf = await reader.read(65536)
-        if not buf:
-            break
-        stat_fn(len(buf))
-        writer.write(buf)
-        await writer.drain()
-    writer.close()
-    await writer.wait_closed()
+    try:
+        while 1:
+            buf = await reader.read(65536)
+            if not buf:
+                break
+            stat_fn(len(buf))
+            writer.write(buf)
+            await writer.drain()
+    finally:
+        writer.close()
+        await writer.wait_closed()
 
 
 class UdpForwarderProtocol(asyncio.DatagramProtocol):
