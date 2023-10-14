@@ -1,38 +1,28 @@
 #!python3
-# Asynchronous SOCKS5 server with multi-homing support.
+# Asynchronous SOCKS5 proxy server with multi-homing support.
 # Asyncified from https://github.com/rushter/socks5/blob/master/server.py by @nneonneo
 # IPv6 support by @philrosenthal
 
 import asyncio
 import logging
-import random
 import socket
 import struct
-from asyncio.staggered import staggered_race
-from dataclasses import dataclass
 from enum import IntEnum
 from io import BytesIO
-from typing import Any, BinaryIO, Callable, Coroutine, Sequence
+from typing import Any, BinaryIO, Callable, Coroutine
 
 from . import status
-from dns.asyncresolver import Resolver
-from dns.inet import af_for_address
+from .proxy_server import (
+    AsyncProxyHandler,
+    AsyncProxyServer,
+    SocketAddress,
+    Socks5AddressType,
+)
 
 logger = logging.getLogger("socks5")
 
 
 SOCKS_VERSION = 5
-HAPPY_EYEBALLS_DELAY = 0.05  # seconds
-CONNECT_TIMEOUT = 75  # seconds
-
-
-SocketAddress = tuple[str, int]
-
-
-@dataclass
-class GenericAddress:
-    ipv4: SocketAddress | None = None
-    ipv6: SocketAddress | None = None
 
 
 class Socks5Status(IntEnum):
@@ -47,12 +37,6 @@ class Socks5Status(IntEnum):
     EAFNOSUPPORT = 8  # Address type not supported
 
 
-class Socks5AddressType(IntEnum):
-    IPV4 = 1
-    DOMAIN = 3
-    IPV6 = 4
-
-
 def encode_address(sockaddr: SocketAddress | None = None) -> bytes:
     # encode sockaddr as SOCKS5 address
     if sockaddr is None:
@@ -65,24 +49,6 @@ def encode_address(sockaddr: SocketAddress | None = None) -> bytes:
     except Exception:
         addrbytes = socket.inet_pton(socket.AF_INET6, address)
         return struct.pack("!B16sH", Socks5AddressType.IPV6, addrbytes, port)
-
-
-async def forwarder_loop(
-    reader: asyncio.StreamReader,
-    writer: asyncio.StreamWriter,
-    stat_fn: Callable[[int], None],
-) -> None:
-    try:
-        while 1:
-            buf = await reader.read(65536)
-            if not buf:
-                break
-            stat_fn(len(buf))
-            writer.write(buf)
-            await writer.drain()
-    finally:
-        writer.close()
-        await writer.wait_closed()
 
 
 class UdpForwarderProtocol(asyncio.DatagramProtocol):
@@ -104,7 +70,7 @@ class UdpForwarderProtocol(asyncio.DatagramProtocol):
 
 
 class UdpForwarder:
-    def __init__(self, log_tag: str, server: "AsyncSocks5Server", local_address: str):
+    def __init__(self, log_tag: str, server: "AsyncProxyServer", local_address: str):
         self.log_tag = log_tag + " [udp]"
         self.server = server
         self.local_address = local_address
@@ -218,29 +184,7 @@ class UdpForwarder:
             self.server_conn_ipv6.close()
 
 
-class AsyncSocks5Handler:
-    def __init__(
-        self,
-        reader: asyncio.StreamReader,
-        writer: asyncio.StreamWriter,
-        server: "AsyncSocks5Server",
-    ):
-        self.reader = reader
-        self.writer = writer
-        self.server = server
-
-        peer_addr = writer.get_extra_info("peername")
-        if peer_addr is None:
-            self.log_tag = "<unknown>"
-        elif len(peer_addr) == 2:
-            # IPv4
-            self.log_tag = "%s:%s" % peer_addr
-        elif len(peer_addr) == 4:
-            # IPv6
-            self.log_tag = "[%s]:%s" % peer_addr[:2]
-        else:
-            self.log_tag = "[%s]" % (peer_addr,)
-
+class AsyncSocks5Handler(AsyncProxyHandler):
     def send_reply(
         self, status: Socks5Status, bindaddr: tuple[str, int] | None = None
     ) -> None:
@@ -257,7 +201,8 @@ class AsyncSocks5Handler:
         version, nmethods = await self.readstruct("!BB")
         if version != SOCKS_VERSION:
             raise Exception(
-                "Invalid version %r (not configured as SOCKS proxy?)" % chr(version)
+                "Invalid version %r (not configured as unencrypted SOCKS proxy?)"
+                % chr(version)
             )
 
         # get available methods
@@ -321,45 +266,14 @@ class AsyncSocks5Handler:
         return address, port
 
     async def handle_connect(self, address_type: int, address: SocketAddress) -> None:
-        resolved = await self.server.resolve_address(address_type, address)
-
         try:
-            if resolved.ipv4 is not None and resolved.ipv6 is not None:
-                ipv6_addr = resolved.ipv6
-                ipv4_addr = resolved.ipv4
-                # happy eyeballs
-                result, result_index, exceptions = await staggered_race(
-                    [
-                        lambda: self.server.ipv6_connect(ipv6_addr),
-                        lambda: self.server.ipv4_connect(ipv4_addr),
-                    ],
-                    delay=HAPPY_EYEBALLS_DELAY,
-                )
-                if not result:
-                    raise exceptions[0]
-                connection = result
-            elif resolved.ipv4 is not None:
-                connection = await self.server.ipv4_connect(resolved.ipv4)
-            elif resolved.ipv6 is not None:
-                connection = await self.server.ipv6_connect(resolved.ipv6)
-            else:
-                raise Exception("Host %s could not be resolved" % (address,))
+            connection = await self.server.tcp_connect(address_type, address)
         except Exception as e:
             self.send_reply(Socks5Status.EHOSTUNREACH)
             raise e
 
         self.send_reply(Socks5Status.SUCCEEDED)
-
-        s_reader, s_writer = connection
-        await asyncio.gather(
-            forwarder_loop(
-                s_reader, self.writer, self.server.traffic_stats.add_inbound
-            ),
-            forwarder_loop(
-                self.reader, s_writer, self.server.traffic_stats.add_outbound
-            ),
-            return_exceptions=True,
-        )
+        await self.tcp_forward(connection)
 
     async def handle_udp(self, client_address: SocketAddress) -> None:
         csock_addr = self.writer.get_extra_info("sockname")[0]
@@ -384,156 +298,13 @@ class AsyncSocks5Handler:
             udp_forwarder.close()
 
 
-class AsyncSocks5Server:
-    def __init__(
-        self,
-        listen_hosts: str | Sequence[str] = ("::", "0.0.0.0"),
-        listen_port: int = 9876,
-        traffic_stats: status.TrafficStats | None = None,
-        resolver: Resolver | None = None,
-        connect_host_ipv4: str | None = None,
-        connect_host_ipv6: str | None = None,
-    ):
-        self.listen_hosts = listen_hosts
-        self.listen_port = listen_port
-        self.traffic_stats = traffic_stats or status.SimpleTrafficStats()
-        self.resolver = resolver or Resolver()
-        self.connect_host_ipv4 = connect_host_ipv4
-        self.connect_host_ipv6 = connect_host_ipv6
-        self.resolver_source: str | None = None
-        if self.connect_host_ipv4 is not None or self.connect_host_ipv6 is not None:
-            resolver_afs = [af_for_address(ns) for ns in self.resolver.nameservers]
-            if (
-                any(af == socket.AF_INET for af in resolver_afs)
-                and self.connect_host_ipv4 is not None
-            ):
-                self.resolver_source = self.connect_host_ipv4
-                self.resolver.nameservers = [
-                    ns
-                    for ns in self.resolver.nameservers
-                    if af_for_address(ns) == socket.AF_INET
-                ]
-            elif (
-                any(af == socket.AF_INET6 for af in resolver_afs)
-                and self.connect_host_ipv6 is not None
-            ):
-                self.resolver_source = self.connect_host_ipv6
-                self.resolver.nameservers = [
-                    ns
-                    for ns in self.resolver.nameservers
-                    if af_for_address(ns) == socket.AF_INET6
-                ]
-            else:
-                raise Exception("Resolver does not have any suitable nameservers!")
-
-    async def run(self) -> None:
-        server = await asyncio.start_server(
-            self.client_connected,
-            host=self.listen_hosts,
-            port=self.listen_port,
-            reuse_address=True,
-        )
-        await server.serve_forever()
-
-    async def client_connected(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
-        handler = AsyncSocks5Handler(reader, writer, server=self)
-        self.traffic_stats.add_connection()
-        try:
-            await handler.handle()
-        finally:
-            self.traffic_stats.remove_connection()
-
-    async def ipv4_connect(
-        self, address: SocketAddress
-    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-        local_addr = (
-            (self.connect_host_ipv4, 0) if self.connect_host_ipv4 is not None else None
-        )
-        return await asyncio.wait_for(
-            asyncio.open_connection(address[0], address[1], local_addr=local_addr),
-            timeout=CONNECT_TIMEOUT,
-        )
-
-    async def ipv6_connect(
-        self, address: SocketAddress
-    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-        local_addr = (
-            (self.connect_host_ipv6, 0) if self.connect_host_ipv6 is not None else None
-        )
-        return await asyncio.wait_for(
-            asyncio.open_connection(address[0], address[1], local_addr=local_addr),
-            timeout=CONNECT_TIMEOUT,
-        )
-
-    async def dummy_resolve(self):
-        raise Exception("address family not supported")
-
-    async def _resolve_domain(self, address: SocketAddress) -> GenericAddress:
-        domain, port = address
-
-        result = GenericAddress()
-        try:
-            socket.inet_pton(socket.AF_INET, domain)
-            result.ipv4 = address
-            return result
-        except Exception:
-            pass
-
-        try:
-            socket.inet_pton(socket.AF_INET6, domain)
-            result.ipv6 = address
-            return result
-        except Exception:
-            pass
-
-        if self.connect_host_ipv4 is None and self.connect_host_ipv6 is not None:
-            ipv4_resolver = self.dummy_resolve()
-        else:
-            ipv4_resolver = self.resolver.resolve(domain, "A", source=self.resolver_source)
-
-        if self.connect_host_ipv4 is not None and self.connect_host_ipv6 is None:
-            ipv6_resolver = self.dummy_resolve()
-        else:
-            ipv6_resolver = self.resolver.resolve(domain, "AAAA", source=self.resolver_source)
-
-        ipv4, ipv6 = await asyncio.gather(
-            ipv4_resolver,
-            ipv6_resolver,
-            return_exceptions=True,
-        )
-        if not isinstance(ipv4, BaseException) and ipv4:
-            result.ipv4 = (random.choice(ipv4).address, port)
-        if not isinstance(ipv6, BaseException) and ipv6:
-            result.ipv6 = (random.choice(ipv6).address, port)
-        return result
-
-    async def resolve_address(
-        self, address_type: int, address: SocketAddress
-    ) -> GenericAddress:
-        if address_type == Socks5AddressType.IPV4:
-            result = GenericAddress(ipv4=address)
-        elif address_type == Socks5AddressType.DOMAIN:
-            result = await self._resolve_domain(address)
-        elif address_type == Socks5AddressType.IPV6:
-            result = GenericAddress(ipv6=address)
-
-        if self.connect_host_ipv4 is None and self.connect_host_ipv6 is not None:
-            result.ipv4 = None
-        elif self.connect_host_ipv4 is not None and self.connect_host_ipv6 is None:
-            result.ipv6 = None
-
-        return result
-
-
 if __name__ == "__main__":
-
+    # Testing purposes only
     stats = status.StatusMonitor("SOCKS5 Server", interval=1)
     logging.getLogger().addHandler(stats)
 
     async def main() -> None:
-        server = AsyncSocks5Server(traffic_stats=stats)
+        server = AsyncProxyServer(AsyncSocks5Handler, traffic_stats=stats)
         asyncio.create_task(server.run())
         await stats.render_forever()
 

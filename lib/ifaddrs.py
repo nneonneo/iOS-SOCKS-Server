@@ -1,7 +1,25 @@
 # adapted from https://stackoverflow.com/a/30495952/1204143
 import collections
 import socket
-from ctypes import *
+from ctypes import (
+    CDLL,
+    POINTER,
+    Structure,
+    addressof,
+    byref,
+    c_char,
+    c_char_p,
+    c_int,
+    c_ubyte,
+    c_uint,
+    c_ushort,
+    c_void_p,
+    cast,
+    create_string_buffer,
+    memmove,
+    memset,
+    sizeof,
+)
 
 
 def get_sockaddr(sockaddr_p):

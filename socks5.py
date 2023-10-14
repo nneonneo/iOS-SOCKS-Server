@@ -1,5 +1,5 @@
 #!python3
-# Socks5 server for Pythonista by @nneonneo
+# Socks5/HTTP Proxy server for Pythonista by @nneonneo
 # Pretty statistics view and IPv6 support added by @philrosenthal
 
 import ipaddress
@@ -7,7 +7,9 @@ import logging
 import socket
 import threading
 
-from lib.socks5_server import AsyncSocks5Server
+from lib.socks5_server import AsyncSocks5Handler
+from lib.http_proxy_server import AsyncHTTPProxyHandler
+from lib.proxy_server import AsyncProxyServer
 from lib.status import StatusMonitor
 
 logging.basicConfig(level=logging.ERROR)
@@ -15,13 +17,14 @@ logging.basicConfig(level=logging.ERROR)
 # IP over which the proxy will be available (probably WiFi IP)
 PROXY_HOST = "172.20.10.1"
 # IP over which the proxy will attempt to connect to the Internet
-CONNECT_HOST_IPV4 = None
+CONNECT_HOST_IPV4 = "0.0.0.0"
 CONNECT_HOST_IPV6 = None
 # Time out connections after being idle for this long (in seconds)
 IDLE_TIMEOUT = 1800
 
-SOCKS_HOST = "0.0.0.0"
+LISTEN_HOST = "0.0.0.0"
 SOCKS_PORT = 9876
+HTTP_PORT = 9877
 WPAD_PORT = 8088
 
 # Try to keep the screen from turning off (iOS)
@@ -255,11 +258,14 @@ def run_wpad_server(server):
 if __name__ == "__main__":
     import asyncio
 
-    wpad_server = create_wpad_server(SOCKS_HOST, WPAD_PORT, PROXY_HOST, SOCKS_PORT)
+    wpad_server = create_wpad_server(LISTEN_HOST, WPAD_PORT, PROXY_HOST, SOCKS_PORT)
 
     initial_output += "PAC URL: http://{}:{}/wpad.dat\n".format(PROXY_HOST, WPAD_PORT)
     initial_output += "SOCKS Address: {}:{}\n".format(
-        PROXY_HOST or SOCKS_HOST, SOCKS_PORT
+        PROXY_HOST or LISTEN_HOST, SOCKS_PORT
+    )
+    initial_output += "HTTP Proxy Address: {}:{}\n".format(
+        PROXY_HOST or LISTEN_HOST, HTTP_PORT
     )
     stats = StatusMonitor(initial_output)
     logging.getLogger().addHandler(stats)
@@ -269,8 +275,9 @@ if __name__ == "__main__":
     thread.start()
 
     async def main():
-        server = AsyncSocks5Server(
-            listen_hosts=SOCKS_HOST,
+        server = AsyncProxyServer(
+            AsyncSocks5Handler,
+            listen_hosts=LISTEN_HOST,
             listen_port=SOCKS_PORT,
             traffic_stats=stats,
             resolver=resolver,
@@ -278,6 +285,18 @@ if __name__ == "__main__":
             connect_host_ipv6=CONNECT_HOST_IPV6,
         )
         asyncio.create_task(server.run())
+
+        server = AsyncProxyServer(
+            AsyncHTTPProxyHandler,
+            listen_hosts=LISTEN_HOST,
+            listen_port=HTTP_PORT,
+            traffic_stats=stats,
+            resolver=resolver,
+            connect_host_ipv4=CONNECT_HOST_IPV4,
+            connect_host_ipv6=CONNECT_HOST_IPV6,
+        )
+        asyncio.create_task(server.run())
+
         await stats.render_forever()
 
     try:
