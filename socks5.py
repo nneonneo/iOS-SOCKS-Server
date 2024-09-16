@@ -256,7 +256,7 @@ def full_screen_handler(sender):
     fs_view = ui.View()
     fs_view.name = "Full screen"
     fs_view.background_color = 'black'
-    fs_view.present(style='popover', hide_title_bar=True)
+    fs_view.present(style='popover', hide_title_bar=True, orientations=['landscape'])
 
 def run_wpad_server(server):
     try:
