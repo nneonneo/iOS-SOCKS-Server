@@ -255,8 +255,9 @@ function FindProxyForURL(url, host)
 def full_screen_handler(sender):
     fs_view = ui.View()
     fs_view.name = "Full screen"
-    fs_view.background_color = 'black'
-    fs_view.present(style='popover', hide_title_bar=True, orientations=['landscape'])
+    fs_view.background_color = "black"
+    fs_view.present(style="popover", hide_title_bar=True, orientations=["landscape"])
+
 
 def run_wpad_server(server):
     try:
@@ -312,16 +313,16 @@ if __name__ == "__main__":
     # Create side panel UI component to enter full screen
     view = ui.View()
     view.name = "SOCKS"
-    view.background_color = 'black'
-    view.flex = 'WH'
+    view.background_color = "black"
+    view.flex = "WH"
     # Add simple button to show full screen popover
     fs_button = ui.Button(title="Enter full screen")
     fs_button.action = full_screen_handler
 
     # Render main UI and full screen button
     view.add_subview(fs_button)
-    view.present(style='panel', hide_title_bar=True)
-    
+    view.present(style="panel", hide_title_bar=True)
+
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
