@@ -171,7 +171,7 @@ try:
                 for iface in iftypes["cell"]
                 if iface.addr.family == socket.AF_INET6
                 and iface.addr.address
-                and is_globally_routable(iface.addr.address)
+                and (is_globally_routable(iface.addr.address) if not is_vpn else True)
                 and iface.name == iface_ipv4.name
             ]
 
