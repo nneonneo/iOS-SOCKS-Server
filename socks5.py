@@ -27,6 +27,9 @@ SOCKS_PORT = 9876
 HTTP_PORT = 9877
 WPAD_PORT = 8088
 
+USE_PHONE_VPN = True
+CUSTOM_RESOLVERS = []
+
 # Try to keep the screen from turning off (iOS)
 try:
     import console
@@ -54,19 +57,21 @@ def is_globally_routable(ipv6_address):
     return True
 
 
+DEFAULT_RESOLVERS = [
+    "1.0.0.1",
+    "1.1.1.1",
+    "8.8.8.8",
+    "2606:4700:4700::1111",
+    "2606:4700:4700::1001",
+    "2001:4860:4860::8844",
+]
+
 try:
     # TODO: configurable DNS (or find a way to use the cell network's own DNS)
     import dns.asyncresolver
 
     resolver = dns.asyncresolver.Resolver(configure=False)
-    resolver.nameservers += [
-        "1.0.0.1",
-        "1.1.1.1",
-        "8.8.8.8",
-        "2606:4700:4700::1111",
-        "2606:4700:4700::1001",
-        "2001:4860:4860::8844",
-    ]
+    resolver.nameservers += CUSTOM_RESOLVERS or DEFAULT_RESOLVERS
 except ImportError:
     # pip install dnspython
     print("Warning: dnspython not available; falling back to system DNS")
@@ -89,6 +94,7 @@ try:
 
     interfaces = ifaddrs.get_interfaces()
     iftypes = defaultdict(list)
+
     for iface in interfaces:
         if not iface.addr:
             continue
@@ -99,8 +105,17 @@ try:
             iftypes["en"].append(iface)
         elif iface.name.startswith("bridge"):
             iftypes["bridge"].append(iface)
+        elif iface.name.startswith("utun"):
+            iftypes["vpn"].append(iface)
         else:
             iftypes["cell"].append(iface)
+
+    if iftypes["vpn"] and USE_PHONE_VPN:
+        ipv4_output += "VPN use enabled (change with USE_PHONE_VPN)\n"
+        new_ifaces = []
+        new_ifaces.extend(iftypes["vpn"])
+        new_ifaces.extend(iftypes["cell"])
+        iftypes["cell"] = new_ifaces
 
     if iftypes["bridge"]:
         iface = next(
@@ -140,6 +155,8 @@ try:
         )
         iface_ipv6 = None
 
+        is_vpn = iface_ipv4 and iface_ipv4.name.startswith("utun")
+
         if iface_ipv4:
             iface_ipv4.addr.address
             ipv4_output += "Will connect to IPv4 servers over interface %s at %s\n" % (
@@ -154,14 +171,14 @@ try:
                 for iface in iftypes["cell"]
                 if iface.addr.family == socket.AF_INET6
                 and iface.addr.address
-                and is_globally_routable(iface.addr.address)
+                and (is_globally_routable(iface.addr.address) if not is_vpn else True)
                 and iface.name == iface_ipv4.name
             ]
 
             # Select the last IPv6 address to select the temporary address for reduced tracking
             iface_ipv6 = iface_ipv6_list[-1] if iface_ipv6_list else None
 
-        if iface_ipv6 is None:
+        if iface_ipv6 is None and not is_vpn:
             # Create a list of all IPv6 addresses that are globally routable
             iface_ipv6_list = [
                 iface
