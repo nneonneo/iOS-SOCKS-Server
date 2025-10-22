@@ -1,6 +1,7 @@
 # What
 
-A simple HTTP/SOCKS proxy designed to run on Pythonista on iOS, letting you fake-tether your devices to a phone. 
+A simple HTTP/SOCKS proxy designed to run on Pythonista on iOS, letting you fake-tether your devices to a phone.
+It can also run on Android (Termux) with automatic hotspot IP detection.
 
 # Installation
 
@@ -11,7 +12,7 @@ A simple HTTP/SOCKS proxy designed to run on Pythonista on iOS, letting you fake
 - Open Pythonista, navigate to iCloud, `iOS-SOCKS-Server` and open the `socks5.py` script.
 - Optionally, you can tap on the wrench and select `Shortcuts...` to add the script to your home screen. 
 
-# Running
+# Running (iOS)
 
 - Connect your devices to the same WiFi network as your phone. If there's no suitable network, you can create a computer-to-computer (ad-hoc) network using your laptop and connect to it with your phone.
 - Open the home screen shortcut (if you made one), or open the `socks5.py` script in Pythonista and hit Run. 
@@ -24,6 +25,29 @@ A simple HTTP/SOCKS proxy designed to run on Pythonista on iOS, letting you fake
         - On Windows, you may consider using the [SSTap](https://sourceforge.net/projects/sstap/) project to force all connections to go through the proxy. Disclaimer: this project does not have any affiliation with SSTap and cannot provide support for any issues that arise from its use.
     - For Android: open Settings, Wi-Fi, select your network, expand the Advanced Settings, change the proxy setting to Manual, and enter the host and port for the *HTTP proxy*. Note that SOCKS proxy support on Android is limited, even when using the PAC URL, so the HTTP proxy is recommended.
         - Many applications on Android do not respect proxy settings, unfortunately, and in those cases you will have to configure the apps manually or use an app like Proxifier to force apps to use the proxy.
+
+# Running (Android via Termux)
+
+Note: recommended when you are comfortable working with termux on non-rooted Android devices.
+
+## Install dependencies
+
+```bash
+pkg install python
+pip install psutil
+```
+
+## Start the server (Android mode)
+
+```bash
+python3 socks5.py --mode android
+```
+
+## Client configuration
+
+- SOCKS5: set host to the printed hotspot IP and port `9876`.
+- HTTP proxy: set host to the printed hotspot IP and port `9877`.
+- PAC URL is printed at startup and uses the hotspot IP.
 
 # Why
 
