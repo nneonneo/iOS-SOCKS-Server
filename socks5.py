@@ -17,7 +17,9 @@ logging.basicConfig(level=logging.ERROR)
 # IP over which the proxy will be available (probably WiFi IP)
 PROXY_HOST = "172.20.10.1"
 # IP over which the proxy will attempt to connect to the Internet
-CONNECT_HOST_IPV4 = "0.0.0.0"
+# Edited by Over-Speeding-Driver to follow default IOS connection
+# CONNECT_HOST_IPV4 = "0.0.0.0"
+CONNECT_HOST_IPV4 = None
 CONNECT_HOST_IPV6 = None
 # Time out connections after being idle for this long (in seconds)
 IDLE_TIMEOUT = 1800
@@ -149,10 +151,12 @@ try:
         )
 
     if iftypes["cell"]:
-        iface_ipv4 = next(
-            (iface for iface in iftypes["cell"] if iface.addr.family == socket.AF_INET),
-            None,
-        )
+        # Edited by Over-Speeding-Driver to follow default IOS connection
+        # iface_ipv4 = next(
+        #     (iface for iface in iftypes["cell"] if iface.addr.family == socket.AF_INET),
+        #     None,
+        # )
+        iface_ipv4 = None
         iface_ipv6 = None
 
         is_vpn = iface_ipv4 and iface_ipv4.name.startswith("utun")
