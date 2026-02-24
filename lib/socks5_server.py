@@ -18,6 +18,8 @@ from .proxy_server import (
     SocketAddress,
     Socks5AddressType,
 )
+from .socks5_udp_fragmentation import Socks5UdpFragmentReassembler
+
 
 logger = logging.getLogger("socks5")
 
@@ -80,6 +82,11 @@ class UdpForwarder:
             tuple[asyncio.DatagramTransport, SocketAddress], SocketAddress
         ] = {}
 
+        # Reassembles SOCKS5 UDP fragments (FRAG!=0) from the client per RFC 1928.
+        # Server->client responses remain unfragmented at the SOCKS layer.
+        self.reassembler = Socks5UdpFragmentReassembler(timeout_seconds=5.0)
+        self._udp_frag_counter = 0
+
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
         self.client_conn, _ = await loop.create_datagram_endpoint(
@@ -116,10 +123,35 @@ class UdpForwarder:
         try:
             # decode header
             _, frag, address_type = self.readstruct(sockfile, "!HBB")
-            assert frag == 0, "UDP fragmentation is not supported"
             address = self.read_addrport(address_type, sockfile)
             assert address is not None, "Address type is not supported"
             payload = sockfile.read()
+
+            # SOCKS5 UDP fragmentation reassembly (client -> server)
+            if frag != 0:
+                # Periodic cleanup of expired reassembly state (best-effort)
+                self._udp_frag_counter = (self._udp_frag_counter + 1) & 0x3F
+                if self._udp_frag_counter == 0:
+                    self.reassembler.cleanup()
+
+                key = (
+                    client_addr[0],
+                    client_addr[1],
+                    int(address_type),
+                    address[0],
+                    int(address[1]),
+                )
+                reassembled = self.reassembler.push_fragment(
+                    key=key,
+                    frag=frag,
+                    payload=payload,
+                )
+                if reassembled is None:
+                    # Not complete yet (or invalid/expired) -> drop silently.
+                    return
+                payload = reassembled
+
+            # Count the forwarded datagram payload size (avoid double-counting fragments).
             self.server.traffic_stats.add_outbound(len(payload))
 
             resolved = await self.server.resolve_address(address_type, address)
